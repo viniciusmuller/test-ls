@@ -55,6 +55,7 @@
             nativeBuildInputs = with pkgs; [
               rust-toolchain
               rust-analyzer
+              nil
             ];
           };
         }
