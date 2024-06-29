@@ -26,7 +26,7 @@ struct Function {
 #[derive(Debug, PartialEq, Eq)]
 struct Module {
     name: Atom,
-    functions: Vec<Function>,
+    body: Box<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -39,14 +39,17 @@ struct Call {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Expression {
+    String(String),
     Float(Float),
     Integer(i128),
     Atom(Atom),
     Identifier(Identifier),
     Block(Vec<Expression>),
     Module(Module),
-    // TODO: will these refer to anonymous functions or functions defined with `def`?
-    Function(Function),
+    FunctionDef(Function),
+    // TODO: anonymous functions
+    // TODO: function capture
+    // TODO: macro
     Call(Call),
 }
 
@@ -60,76 +63,13 @@ fn get_tree(code: &str) -> Tree {
 
 fn main() {
     let code = "
-    defmodule MyModule.Name do
-        def b do
-            10
-        end
+    def func do
+        priv_func()
     end
-
-    defmodule MySecondModule.Name do
-        def b do
-            10
-        end
-
-        # TODO: test one-line form of def and do blocks and see if it works
-    end
-    ";
-
-    // TODO: start test suite
-    let code = "
-    Enum.parse(a, b)
-    ";
-
-    let code = "
-    to_integer(a, b)
-    ";
-
-    let code = "
-    module.to_integer(a, b)
-    ";
-
-    let code = "
-    defmodule MySecondModule.Name do
-
-    end
-    ";
-
-    let code = "
-    :test
-    Test
-    ";
-
-    let code = "
-    :test
-
-    Elixir.MyModule
-    ";
-
-    let code = "
-    to_integer(a)
     ";
 
     let result = parse(&code);
     dbg!(result);
-
-    // let tree = get_tree(code);
-
-    // let root_node = tree.root_node();
-    // let mut nodes = vec![];
-
-    // // TODO: drop comments
-    // let tokens = nodes.clone();
-    // dbg!(&tokens);
-
-    // let (module, offset) = try_parse_module(&code, &tokens, 0).unwrap();
-    // let (result, offset) = try_parse_expression(&code, &tokens, 0).unwrap();
-
-    // let (result, offset) = parse_many_expressions(&code, &tokens, 0).unwrap();
-    // dbg!(result);
-
-    // TODO: offset should correctly be returned at the end of the module block (parse the rest of the module block)
-    // let (module_2, _offset) = try_parse_module(&code, &tokens, offset).unwrap();
-    // dbg!(module);
 }
 
 fn parse(code: &str) -> Option<Expression> {
@@ -155,26 +95,59 @@ fn flatten_node_children<'a>(code: &str, node: Node<'a>, vec: &mut Vec<Node<'a>>
 }
 
 fn try_parse_module(code: &str, tokens: &Vec<Node>, offset: u64) -> Option<(Expression, u64)> {
-    let _ = try_parse_grammar_name(tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
 
-    // TODO: refactor this to try find specific identifier
     let (Identifier(identifier), offset) = try_parse_identifier(&code, tokens, offset)?;
     if identifier != "defmodule" {
         return None;
     }
 
     let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
-
     let (module_name, offset) = try_parse_alias(code, tokens, offset)?;
 
     let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
-    dbg!(do_block);
+    dbg!(&do_block);
 
     let module = Expression::Module(Module {
         name: module_name,
-        functions: vec![],
+        body: Box::new(do_block),
     });
     Some((module, offset))
+}
+
+fn try_parse_function_definition(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> Option<(Expression, u64)> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
+
+    let (offset, is_private) = match try_parse_keyword(code, tokens, offset, "defp") {
+        Some((_, offset)) => (offset, true),
+        None => (offset, false),
+    };
+
+    let (offset, is_private) = if !is_private {
+        match try_parse_keyword(code, tokens, offset, "def") {
+            Some((_, offset)) => (offset, false),
+            None => (offset, is_private),
+        }
+    } else {
+        (offset, is_private)
+    };
+
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
+
+    let (function_name, offset) = try_parse_identifier(&code, tokens, offset)?;
+
+    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+
+    let function = Expression::FunctionDef(Function {
+        name: function_name,
+        block: Box::new(do_block),
+        is_private,
+    });
+    Some((function, offset))
 }
 
 fn try_parse_grammar_name<'a>(
@@ -201,6 +174,27 @@ fn try_parse_identifier<'a>(
     if token.grammar_name() == "identifier" {
         let identifier_name = extract_node_text(code, token);
         Some((Identifier(identifier_name), offset + 1))
+    } else {
+        None
+    }
+}
+
+fn try_parse_keyword<'a>(
+    code: &str,
+    tokens: &Vec<Node<'a>>,
+    offset: u64,
+    keyword: &str,
+) -> Option<(Identifier, u64)> {
+    let token = tokens[offset as usize];
+
+    if token.grammar_name() == "identifier" {
+        let identifier_name = extract_node_text(code, token);
+
+        if identifier_name == keyword {
+            Some((Identifier(identifier_name), offset + 1))
+        } else {
+            None
+        }
     } else {
         None
     }
@@ -253,17 +247,13 @@ fn try_parse_call(code: &str, tokens: &Vec<Node>, offset: u64) -> Option<(Expres
         None => (offset, false),
     };
 
-    dbg!(offset);
-
     let (arguments, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
         None => (vec![], offset),
         Some((expressions, new_offset)) => (expressions, new_offset),
     };
 
-    dbg!(offset);
-
     let offset = if has_parenthesis {
-        let (_node, new_offset) =  try_parse_grammar_name(tokens, offset, ")")?;
+        let (_node, new_offset) = try_parse_grammar_name(tokens, offset, ")")?;
         new_offset
     } else {
         offset
@@ -362,6 +352,31 @@ fn try_parse_float(code: &str, tokens: &Vec<Node>, offset: u64) -> Option<(Float
     }
 }
 
+fn try_parse_string(code: &str, tokens: &Vec<Node>, offset: u64) -> Option<(String, u64)> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "string")?;
+    let quotes = vec!["\"", "\"\"\""];
+    let (_, offset) = try_parse_either_grammar_name(tokens, offset, &quotes)?;
+    let (string_node, offset) = try_parse_grammar_name(tokens, offset, "quoted_content")?;
+    let string_text = extract_node_text(code, string_node);
+    let (_, offset) = try_parse_either_grammar_name(tokens, offset, &quotes)?;
+    Some((string_text, offset))
+}
+
+fn try_parse_either_grammar_name<'a>(
+    tokens: &Vec<Node<'a>>,
+    offset: u64,
+    grammar_names: &Vec<&str>,
+) -> Option<(Node<'a>, u64)> {
+    for grammar_name in grammar_names {
+        match try_parse_grammar_name(tokens, offset, grammar_name) {
+            Some(result) => return Some(result),
+            None => {}
+        }
+    }
+
+    None
+}
+
 /// Grammar_name = alias means module names in the TS elixir grammar.
 /// e.g: ThisIsAnAlias, Elixir.ThisIsAlsoAnAlias
 /// as these are also technically atoms, we return them as atoms
@@ -377,6 +392,7 @@ fn try_parse_expression<'a>(
     offset: u64,
 ) -> Option<(Expression, u64)> {
     try_parse_module(code, tokens, offset)
+        .or_else(|| try_parse_function_definition(code, tokens, offset))
         .or_else(|| try_parse_call(code, tokens, offset))
         .or_else(|| try_parse_do_block(code, tokens, offset))
         .or_else(|| {
@@ -399,6 +415,10 @@ fn try_parse_expression<'a>(
             try_parse_float(code, tokens, offset)
                 .and_then(|(float, offset)| Some((Expression::Float(float), offset)))
         })
+        .or_else(|| {
+            try_parse_string(code, tokens, offset)
+                .and_then(|(string, offset)| Some((Expression::String(string), offset)))
+        })
 }
 
 fn parse_many_expressions(
@@ -406,7 +426,12 @@ fn parse_many_expressions(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> Option<(Vec<Expression>, u64)> {
-    let (expression, offset) = try_parse_expression(code, tokens, offset)?;
+    let (expression, offset) = match try_parse_expression(code, tokens, offset) {
+        Some(result) => result,
+        None => {
+            return Some((vec![], offset));
+        }
+    };
     let mut expressions = vec![expression];
     let mut offset_mut = offset;
 
@@ -525,9 +550,9 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-             target: Identifier("to_integer".to_string()),
-             remote_callee: None,
-             arguments: vec![Expression::Identifier(Identifier("a".to_string()))]
+            target: Identifier("to_integer".to_string()),
+            remote_callee: None,
+            arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
         })]);
 
         assert_eq!(result, target);
@@ -596,5 +621,144 @@ mod tests {
     }
 
     // TODO: parse integer in different bases
-    // TODO: parse integer in scinot
+    // TODO: parse integer in scientific notation
+
+    #[test]
+    fn parse_string() {
+        let code = "\"string!\"";
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::String("string!".to_string())]);
+
+        assert_eq!(result, target);
+    }
+
+    // TODO: support string interpolation inside of quoted_content
+    // #[test]
+    // fn parse_string_interpolation() {
+    //     let code = "\"this is #{string_value}!\"";
+    //     let result = parse(&code).unwrap();
+
+    //     let target = Block(vec![Expression::String("\"string!\"".to_string())]);
+
+    //     assert_eq!(result, target);
+    // }
+
+    #[test]
+    fn parse_multiline_string() {
+        let code = "
+        \"\"\"
+        Multiline!
+        String!
+        \"\"\"
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::String(
+            "\n        Multiline!\n        String!\n        ".to_string(),
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_simple_module_definition() {
+        let code = "
+        defmodule Test.CustomModule do
+
+        end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Module(Module {
+            name: Atom("Test.CustomModule".to_string()),
+            body: Box::new(Expression::Block(vec![])),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_multiple_modules_definition() {
+        let code = "
+        defmodule Test.CustomModule do
+
+        end
+
+        defmodule Test.SecondModule do
+
+        end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![
+            Expression::Module(Module {
+                name: Atom("Test.CustomModule".to_string()),
+                body: Box::new(Expression::Block(vec![])),
+            }),
+            Expression::Module(Module {
+                name: Atom("Test.SecondModule".to_string()),
+                body: Box::new(Expression::Block(vec![])),
+            }),
+        ]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_module_functions() {
+        let code = "
+        defmodule Test.CustomModule do
+            def func do
+                priv_func()
+            end
+
+            defp priv_func do
+                10
+            end
+        end
+        ";
+        let result = parse(&code).unwrap();
+
+        // TODO: try to reduce boilerplate in assertions
+        let target = Block(vec![Expression::Module(Module {
+            name: Atom("Test.CustomModule".to_string()),
+            body: Box::new(Block(vec![
+                Expression::FunctionDef(Function {
+                    name: Identifier("func".to_string()),
+                    is_private: false,
+                    block: Box::new(Block(vec![Expression::Call(Call {
+                        target: Identifier("priv_func".to_string()),
+                        remote_callee: None,
+                        arguments: vec![],
+                    })])),
+                }),
+                Expression::FunctionDef(Function {
+                    name: Identifier("priv_func".to_string()),
+                    is_private: true,
+                    block: Box::new(Block(vec![Expression::Integer(10)])),
+                }),
+            ])),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_function_definition() {
+        let code = "
+        def func do
+            priv_func()
+        end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("func".to_string()),
+            is_private: false,
+            block: Box::new(Block(vec![Expression::Call(Call {
+                target: Identifier("priv_func".to_string()),
+                remote_callee: None,
+                arguments: vec![],
+            })])),
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
