@@ -140,7 +140,7 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     flatten_node_children(code, root_node, &mut nodes);
     dbg!(&nodes);
     let tokens = nodes.clone();
-    let (result, _offset) = parse_many_expressions(&code, &tokens, 0).unwrap();
+    let (result, _) = parse_many(&code, &tokens, 0, try_parse_expression)?;
     Ok(Expression::Block(result))
 }
 
@@ -207,7 +207,7 @@ fn try_parse_function_definition(
 
     let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
         Ok(result) => result,
-        Err(_) => (vec![], offset)
+        Err(_) => (vec![], offset),
     };
 
     let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
@@ -222,7 +222,11 @@ fn try_parse_function_definition(
     Ok((function, offset))
 }
 
-fn try_parse_parameters(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Vec<Identifier>> {
+fn try_parse_parameters(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Vec<Identifier>> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
 
     let (offset, has_parenthesis) = match try_parse_grammar_name(tokens, offset, "(") {
@@ -236,10 +240,11 @@ fn try_parse_parameters(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserRe
     dbg!(has_parenthesis);
 
     let sep_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
-    let (parameters, offset) = match try_parse_sep_by(code, tokens, offset, try_parse_identifier, sep_parser) {
-        Ok((parameters, offset)) => (parameters, offset),
-        Err(_) => (vec![], offset)
-    };
+    let (parameters, offset) =
+        match try_parse_sep_by(code, tokens, offset, try_parse_identifier, sep_parser) {
+            Ok((parameters, offset)) => (parameters, offset),
+            Err(_) => (vec![], offset),
+        };
 
     dbg!(&parameters);
 
@@ -252,13 +257,6 @@ fn try_parse_parameters(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserRe
 
     Ok((parameters, offset))
 }
-
-
-    // let (arguments, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
-    //     Ok((expressions, new_offset)) => (expressions, new_offset),
-    //     Err(_) => (vec![], offset),
-    // };
-
 
 fn try_parse_grammar_name<'a>(
     tokens: &Vec<Node<'a>>,
@@ -326,10 +324,15 @@ fn try_parse_keyword<'a>(
     }
 }
 
-fn try_consume<'a, T>(code: &'a str, tokens: &'a Vec<Node<'a>>, offset: u64, parser: Parser<'a, T>) -> u64 {
+fn try_consume<'a, T>(
+    code: &'a str,
+    tokens: &'a Vec<Node<'a>>,
+    offset: u64,
+    parser: Parser<'a, T>,
+) -> u64 {
     match parser(code, tokens, offset) {
         Ok((_node, new_offset)) => new_offset,
-        Err(_) => offset
+        Err(_) => offset,
     }
 }
 
@@ -492,7 +495,8 @@ fn try_parse_do_block<'a>(
 ) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "do_block")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "do")?;
-    let (body, offset) = parse_many_expressions(code, tokens, offset)?;
+    let (body, offset) =
+        parse_many(code, tokens, offset, try_parse_expression).unwrap_or_else(|_| (vec![], offset));
     let (_, offset) = try_parse_grammar_name(tokens, offset, "end")?;
     Ok((Expression::Block(body), offset))
 }
@@ -545,29 +549,32 @@ fn try_parse_map(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Ma
     let (_, offset) = try_parse_grammar_name(tokens, offset, "{")?;
     // TODO: why is this the only case with a very weird and different grammar_name than what's
     // shown on debug? dbg!() for the Node says it's map_content but it's rather _items_with_trailing_separator
-    let offset = match try_parse_grammar_name(tokens, offset, "_items_with_trailing_separator") {
-        Ok((_, new_offset)) => new_offset,
-        Err(_) => offset,
+
+    let map_content_parser = |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "_items_with_trailing_separator")
     };
+    let offset = try_consume(code, tokens, offset, map_content_parser);
+
+    dbg!(offset);
+
     // Keyword-notation-only map
-    let (pairs, offset) = match try_parse_keyword_expressions(code, tokens, offset) {
-        Ok((keyword, new_offset)) => (Some(keyword.pairs), new_offset),
-        Err(_) => (None, offset),
+    let (keyword_pairs, offset) = match try_parse_keyword_expressions(code, tokens, offset) {
+        Ok((keyword, new_offset)) => (keyword.pairs, new_offset),
+        Err(_) => (vec![], offset),
     };
 
-    let (pairs, offset) = if pairs.is_none() {
-        match try_parse_specific_binary_operator(code, tokens, offset, "=>") {
-            Ok((left_right_pairs, new_offset)) => (Some(vec![left_right_pairs]), new_offset), // TODO: return vec because there will be the sepBy parser as well
-            Err(_) => (pairs, offset),
-        }
-    } else {
-        (pairs, offset)
-    };
+    dbg!(&keyword_pairs);
 
+    let key_value_parser =
+        |code, tokens, offset| try_parse_specific_binary_operator(code, tokens, offset, "=>");
+    let comma_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
+    let (expression_pairs, offset) =
+        try_parse_sep_by(code, tokens, offset, key_value_parser, comma_parser)
+            .unwrap_or_else(|_| (vec![], offset));
+
+    let pairs = keyword_pairs.into_iter().chain(expression_pairs).collect();
     let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
-    let map = Map {
-        items: pairs.unwrap_or_default(),
-    };
+    let map = Map { items: pairs };
     Ok((map, offset))
 }
 
@@ -591,13 +598,12 @@ fn try_parse_specific_binary_operator(
     tokens: &Vec<Node>,
     offset: u64,
     expected_operator: &str,
-) -> Result<((Expression, Expression), u64), ParseError> {
+) -> ParserResult<(Expression, Expression)> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
     let (left, offset) = try_parse_expression(code, tokens, offset)?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, expected_operator)?;
     let (right, offset) = try_parse_expression(code, tokens, offset)?;
-    dbg!(left, right);
-    todo!()
+    Ok(((left, right), offset))
 }
 
 fn try_parse_attribute(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Attribute> {
@@ -720,6 +726,10 @@ fn try_parse_expression<'a>(
             try_parse_alias(code, tokens, offset)
                 .and_then(|(atom, offset)| Ok((Expression::Atom(atom), offset)))
         })
+        .or_else(|_| {
+            try_parse_string(code, tokens, offset)
+                .and_then(|(string, offset)| Ok((Expression::String(string), offset)))
+        })
         .or_else(|_| try_parse_nil(tokens, offset))
         .or_else(|_| try_parse_bool(tokens, offset))
         .or_else(|_| try_parse_atom(code, tokens, offset))
@@ -749,21 +759,15 @@ fn try_parse_expression<'a>(
             try_parse_float(code, tokens, offset)
                 .and_then(|(float, offset)| Ok((Expression::Float(float), offset)))
         })
-        .or_else(|_| {
-            try_parse_string(code, tokens, offset)
-                .and_then(|(string, offset)| Ok((Expression::String(string), offset)))
-        })
 }
 
-fn parse_many_expressions(
-    code: &str,
-    tokens: &Vec<Node>,
+fn parse_many<'a, T>(
+    code: &'a str,
+    tokens: &'a Vec<Node>,
     offset: u64,
-) -> Result<(Vec<Expression>, u64), ParseError> {
-    let (expression, offset) = match try_parse_expression(code, tokens, offset) {
-        Ok(result) => result,
-        Err(_) => return Ok((vec![], offset)),
-    };
+    parser: Parser<'a, T>,
+) -> ParserResult<Vec<T>> {
+    let (expression, offset) = parser(code, tokens, offset)?;
     let mut expressions = vec![expression];
     let mut offset_mut = offset;
 
@@ -772,7 +776,7 @@ fn parse_many_expressions(
     }
 
     loop {
-        match try_parse_expression(code, tokens, offset_mut) {
+        match parser(code, tokens, offset_mut) {
             Ok((expression, offset)) => {
                 expressions.push(expression);
                 offset_mut = offset;
@@ -1154,7 +1158,7 @@ mod tests {
                 Identifier("a".to_string()),
                 Identifier("b".to_string()),
                 Identifier("c".to_string()),
-            ]
+            ],
         })]);
 
         assert_eq!(result, target);
@@ -1296,15 +1300,12 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
             items: vec![
+                (Expression::String("a".to_owned()), Expression::Integer(10)),
                 (
-                    Expression::Atom(Atom("a".to_string())),
-                    Expression::Integer(10),
-                ),
-                (
-                    Expression::Atom(Atom("b".to_string())),
+                    Expression::String("String".to_owned()),
                     Expression::Bool(true),
                 ),
-                (Expression::Atom(Atom("c".to_string())), Expression::Nil),
+                (Expression::String("key".to_owned()), Expression::Nil),
             ],
         })]);
 
