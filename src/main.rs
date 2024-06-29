@@ -78,6 +78,7 @@ enum Expression {
     Call(Call),
 }
 
+// TODO: Create Parser struct abstraction to hold things such as code, filename
 #[derive(Debug, Clone)]
 struct ParseError {
     error_type: ErrorType,
@@ -510,13 +511,22 @@ fn try_parse_map(
     };
     // Keyword-notation-only map
     let (pairs, offset) = match try_parse_keyword_expressions(code, tokens, offset) {
-        Ok((keyword, new_offset)) => (keyword.pairs, new_offset),
-        Err(_) => (vec![], offset)
+        Ok((keyword, new_offset)) => (Some(keyword.pairs), new_offset),
+        Err(_) => (None, offset)
+    };
+
+    let (pairs, offset) = if pairs.is_none() {
+        match try_parse_specific_binary_operator(code, tokens, offset, "=>") {
+            Ok((left_right_pairs, new_offset)) => (Some(vec![left_right_pairs]), new_offset), // TODO: return vec because there will be the sepBy parser as well
+            Err(_) => (pairs, offset)
+        }
+    } else {
+        (pairs, offset)
     };
 
     let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
     let map = Expression::Map(Map {
-        items: pairs,
+        items: pairs.unwrap_or_default(),
     });
     Ok((map, offset))
 }
@@ -532,6 +542,22 @@ fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> Result<(List, 
 
     let list = List { items: expressions };
     Ok((list, offset))
+}
+
+// TODO: now we really need to level up our parser abstraction so we can combine this one with
+// parseSepByComma easily
+fn try_parse_specific_binary_operator(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+    expected_operator: &str
+) -> Result<((Expression, Expression), u64), ParseError> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+    let (left, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, expected_operator)?;
+    let (right, offset) = try_parse_expression(code, tokens, offset)?;
+    dbg!(left, right);
+    todo!()
 }
 
 fn try_parse_tuple(
@@ -1006,6 +1032,9 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    // TODO: parse functions with parameters
+    // TODO: parse functions with default values parameters (\\)
 
     #[test]
     fn parse_function_definition() {
