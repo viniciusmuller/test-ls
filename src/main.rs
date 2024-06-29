@@ -18,6 +18,7 @@ struct Function {
     name: Identifier,
     is_private: bool,
     block: Box<Expression>,
+    parameters: Vec<Identifier>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -47,11 +48,20 @@ struct Keyword {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct Attribute {
+    name: Identifier,
+    value: Box<Expression>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct Call {
     target: Identifier,
     remote_callee: Option<Identifier>,
     arguments: Vec<Expression>,
 }
+
+type ParserResult<T> = Result<(T, u64), ParseError>;
+type Parser<'a, T> = fn(&'a str, &'a Vec<Node<'a>>, u64) -> ParserResult<T>;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Expression {
@@ -68,6 +78,7 @@ enum Expression {
     Identifier(Identifier),
     Block(Vec<Expression>),
     Module(Module),
+    Attribute(Attribute),
     FunctionDef(Function),
     // TODO: anonymous functions
     // TODO: function capture
@@ -113,9 +124,10 @@ fn get_tree(code: &str) -> Tree {
 }
 
 fn main() {
-    let code = "
-    %{a: 10, b: true, c: nil}
-    ";
+    // %{a: 10, b: true, c: nil}
+    let code = r#"
+    :"hello #{name} allaal
+    "#;
 
     let result = parse(&code);
     dbg!(result);
@@ -151,7 +163,7 @@ fn try_parse_module(
     offset: u64,
 ) -> Result<(Expression, u64), ParseError> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
-    let (Identifier(identifier), offset) = try_parse_keyword(&code, tokens, offset, "defmodule")?;
+    let (_, offset) = try_parse_keyword(&code, tokens, offset, "defmodule")?;
 
     let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (module_name, offset) = try_parse_alias(code, tokens, offset)?;
@@ -170,7 +182,7 @@ fn try_parse_function_definition(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> Result<(Expression, u64), ParseError> {
+) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
 
     let (offset, is_private) = match try_parse_keyword(code, tokens, offset, "defp") {
@@ -179,27 +191,74 @@ fn try_parse_function_definition(
     };
 
     let (offset, is_private) = if !is_private {
-        match try_parse_keyword(code, tokens, offset, "def") {
-            Ok((_, offset)) => (offset, false),
-            Err(_) => (offset, is_private),
-        }
+        let (_, offset) = try_parse_keyword(code, tokens, offset, "def")?;
+        (offset, false)
     } else {
         (offset, is_private)
     };
 
-    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
+    let arg_consumer = |_, tokens, offset| try_parse_grammar_name(tokens, offset, "arguments");
+    let offset = try_consume(code, tokens, offset, arg_consumer);
+
+    let call_consumer = |_, tokens, offset| try_parse_grammar_name(tokens, offset, "call");
+    let offset = try_consume(code, tokens, offset, call_consumer);
 
     let (function_name, offset) = try_parse_identifier(&code, tokens, offset)?;
+
+    let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
+        Ok(result) => result,
+        Err(_) => (vec![], offset)
+    };
 
     let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
 
     let function = Expression::FunctionDef(Function {
         name: function_name,
         block: Box::new(do_block),
+        parameters,
         is_private,
     });
+
     Ok((function, offset))
 }
+
+fn try_parse_parameters(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Vec<Identifier>> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
+
+    let (offset, has_parenthesis) = match try_parse_grammar_name(tokens, offset, "(") {
+        Ok((_node, new_offset)) => (new_offset, true),
+        Err(err) => {
+            dbg!(err);
+            (offset, false)
+        }
+    };
+
+    dbg!(has_parenthesis);
+
+    let sep_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
+    let (parameters, offset) = match try_parse_sep_by(code, tokens, offset, try_parse_identifier, sep_parser) {
+        Ok((parameters, offset)) => (parameters, offset),
+        Err(_) => (vec![], offset)
+    };
+
+    dbg!(&parameters);
+
+    let offset = if has_parenthesis {
+        let (_node, new_offset) = try_parse_grammar_name(tokens, offset, ")")?;
+        new_offset
+    } else {
+        offset
+    };
+
+    Ok((parameters, offset))
+}
+
+
+    // let (arguments, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
+    //     Ok((expressions, new_offset)) => (expressions, new_offset),
+    //     Err(_) => (vec![], offset),
+    // };
+
 
 fn try_parse_grammar_name<'a>(
     tokens: &Vec<Node<'a>>,
@@ -249,7 +308,7 @@ fn try_parse_keyword<'a>(
     tokens: &Vec<Node<'a>>,
     offset: u64,
     keyword: &str,
-) -> Result<(Identifier, u64), ParseError> {
+) -> ParserResult<Identifier> {
     let token = tokens[offset as usize];
     let identifier_name = extract_node_text(code, token);
     let grammar_name = token.grammar_name();
@@ -267,6 +326,13 @@ fn try_parse_keyword<'a>(
     }
 }
 
+fn try_consume<'a, T>(code: &'a str, tokens: &'a Vec<Node<'a>>, offset: u64, parser: Parser<'a, T>) -> u64 {
+    match parser(code, tokens, offset) {
+        Ok((_node, new_offset)) => new_offset,
+        Err(_) => offset
+    }
+}
+
 fn try_parse_call(
     code: &str,
     tokens: &Vec<Node>,
@@ -280,10 +346,8 @@ fn try_parse_call(
         Err(_) => (offset, false),
     };
 
-    let offset = match try_parse_grammar_name(tokens, offset, ".") {
-        Ok((_node, new_offset)) => new_offset,
-        Err(_) => offset,
-    };
+    let dot_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ".");
+    let offset = try_consume(code, tokens, offset, dot_parser);
 
     let mut remote_callee = None;
 
@@ -303,13 +367,8 @@ fn try_parse_call(
         offset
     };
 
-    let offset = match try_parse_grammar_name(tokens, offset, ".") {
-        Ok((_node, new_offset)) => new_offset,
-        Err(_) => offset,
-    };
-
+    let offset = try_consume(code, tokens, offset, dot_parser);
     let (identifier, offset) = try_parse_identifier(code, tokens, offset)?;
-
     let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
 
     let (offset, has_parenthesis) = match try_parse_grammar_name(tokens, offset, "(") {
@@ -344,8 +403,36 @@ fn parse_expressions_sep_by_comma(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> Result<(Vec<Expression>, u64), ParseError> {
-    let (expr, offset) = try_parse_expression(code, tokens, offset)?;
+) -> ParserResult<Vec<Expression>> {
+    let sep_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
+    try_parse_sep_by(code, tokens, offset, try_parse_expression, sep_parser)
+}
+
+fn try_parse_keyword_expressions(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Keyword> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "keywords")?;
+    let sep_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
+    try_parse_sep_by(code, tokens, offset, try_parse_keyword_pair, sep_parser)
+        .and_then(|(pairs, offset)| Ok((Keyword { pairs }, offset)))
+}
+
+// TODO: parse_many parser
+
+// fn try_parse_unary<'a, T>(code: &str, tokens: &Vec<Node>, offset: u64, operator_parser: Parser<'a, T>) -> ParserResult<Expression> {
+//     let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+// }
+
+fn try_parse_sep_by<'a, T, S>(
+    code: &'a str,
+    tokens: &'a Vec<Node<'a>>,
+    offset: u64,
+    item_parser: Parser<'a, T>,
+    sep_parser: Parser<'a, S>,
+) -> ParserResult<Vec<T>> {
+    let (expr, offset) = item_parser(code, tokens, offset)?;
     let mut offset_mut = offset;
     let mut expressions = vec![expr];
 
@@ -354,11 +441,11 @@ fn parse_expressions_sep_by_comma(
         return Ok((expressions, offset));
     }
 
-    let mut next_comma = try_parse_grammar_name(tokens, offset, ",");
+    let mut next_sep = sep_parser(code, tokens, offset);
 
-    while next_comma.is_ok() {
-        let (_next_comma, offset) = next_comma.unwrap();
-        let (expr, offset) = try_parse_expression(code, tokens, offset)?;
+    while next_sep.is_ok() {
+        let (_next_comma, offset) = next_sep.unwrap();
+        let (expr, offset) = item_parser(code, tokens, offset)?;
 
         expressions.push(expr);
 
@@ -367,69 +454,42 @@ fn parse_expressions_sep_by_comma(
         }
 
         offset_mut = offset;
-        next_comma = try_parse_grammar_name(tokens, offset, ",");
+        next_sep = sep_parser(code, tokens, offset);
     }
 
     Ok((expressions, offset_mut))
-}
-
-fn try_parse_keyword_expressions(
-    code: &str,
-    tokens: &Vec<Node>,
-    offset: u64,
-) -> Result<(Keyword, u64), ParseError> {
-    let (_, offset) = try_parse_grammar_name(tokens, offset, "keywords")?;
-    let (key, value, offset) = try_parse_keyword_pair(code, tokens, offset)?;
-    let mut pairs = vec![(key, value)];
-    let mut offset_mut = offset;
-
-    // TODO: Having to add these checks feel weird
-    if offset == tokens.len() as u64 {
-        let keyword = Keyword { pairs };
-        return Ok((keyword, offset));
-    }
-
-    let mut next_comma = try_parse_grammar_name(tokens, offset, ",");
-
-    while next_comma.is_ok() {
-        let (_next_comma, offset) = next_comma.unwrap();
-        let (key, value, offset) = try_parse_keyword_pair(code, tokens, offset)?;
-        pairs.push((key, value));
-
-        if offset == tokens.len() as u64 {
-            let keyword = Keyword { pairs };
-            return Ok((keyword, offset));
-        }
-
-        offset_mut = offset;
-        next_comma = try_parse_grammar_name(tokens, offset, ",");
-    }
-
-    // TODO: refactor keyword struct creation here in this function
-    let keyword = Keyword { pairs };
-    Ok((keyword, offset_mut))
 }
 
 fn try_parse_keyword_pair(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> Result<(Expression, Expression, u64), ParseError> {
+) -> ParserResult<(Expression, Expression)> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "pair")?;
     let (key_node, offset) = try_parse_grammar_name(tokens, offset, "keyword")?;
     let atom_text = extract_node_text(&code, key_node);
     // transform atom string from `atom: ` into `atom`
-    let clean_atom = atom_text.replace(" ", "").strip_suffix(":").unwrap().to_string();
+    let clean_atom = atom_text
+        .replace(" ", "")
+        .strip_suffix(":")
+        .unwrap()
+        .to_string();
     let key = Expression::Atom(Atom(clean_atom));
     let (value, offset) = try_parse_expression(code, tokens, offset)?;
-    Ok((key, value, offset))
+    let pair = (key, value);
+    Ok((pair, offset))
 }
+
+// keywords should always come last in lists and maps
+// TODO: parse keywords inside lists
+// iex(1)> [10, b: 30]
+// [10, {:b, 30}]
 
 fn try_parse_do_block<'a>(
     code: &str,
     tokens: &Vec<Node<'a>>,
     offset: u64,
-) -> Result<(Expression, u64), ParseError> {
+) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "do_block")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "do")?;
     let (body, offset) = parse_many_expressions(code, tokens, offset)?;
@@ -437,21 +497,13 @@ fn try_parse_do_block<'a>(
     Ok((Expression::Block(body), offset))
 }
 
-fn try_parse_atom(
-    code: &str,
-    tokens: &Vec<Node>,
-    offset: u64,
-) -> Result<(Expression, u64), ParseError> {
+fn try_parse_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (atom_node, offset) = try_parse_grammar_name(tokens, offset, "atom")?;
     let atom_string = extract_node_text(code, atom_node)[1..].to_string();
     Ok((Expression::Atom(Atom(atom_string)), offset))
 }
 
-fn try_parse_quoted_atom(
-    code: &str,
-    tokens: &Vec<Node>,
-    offset: u64,
-) -> Result<(Expression, u64), ParseError> {
+fn try_parse_quoted_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "quoted_atom")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, ":")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
@@ -461,11 +513,7 @@ fn try_parse_quoted_atom(
     Ok((Expression::Atom(Atom(atom_string)), offset))
 }
 
-fn try_parse_bool(
-    code: &str,
-    tokens: &Vec<Node>,
-    offset: u64,
-) -> Result<(Expression, u64), ParseError> {
+fn try_parse_bool(tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "boolean")?;
 
     let (boolean_result, offset) = match try_parse_grammar_name(tokens, offset, "true") {
@@ -483,11 +531,7 @@ fn try_parse_bool(
     Ok((Expression::Bool(boolean_result), offset))
 }
 
-fn try_parse_nil(
-    code: &str,
-    tokens: &Vec<Node>,
-    offset: u64,
-) -> Result<(Expression, u64), ParseError> {
+fn try_parse_nil(tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     // INFO: for some reason treesitter-elixir outputs nil twice with the same span for each nil,
     // so we consume both
     let (_, offset) = try_parse_grammar_name(tokens, offset, "nil")?;
@@ -495,43 +539,39 @@ fn try_parse_nil(
     Ok((Expression::Nil, offset))
 }
 
-fn try_parse_map(
-    code: &str,
-    tokens: &Vec<Node>,
-    offset: u64,
-) -> Result<(Expression, u64), ParseError> {
+fn try_parse_map(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Map> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "map")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "{")?;
     // TODO: why is this the only case with a very weird and different grammar_name than what's
     // shown on debug? dbg!() for the Node says it's map_content but it's rather _items_with_trailing_separator
-    let offset = match try_parse_grammar_name( tokens, offset, "_items_with_trailing_separator") {
+    let offset = match try_parse_grammar_name(tokens, offset, "_items_with_trailing_separator") {
         Ok((_, new_offset)) => new_offset,
-        Err(_) => offset
+        Err(_) => offset,
     };
     // Keyword-notation-only map
     let (pairs, offset) = match try_parse_keyword_expressions(code, tokens, offset) {
         Ok((keyword, new_offset)) => (Some(keyword.pairs), new_offset),
-        Err(_) => (None, offset)
+        Err(_) => (None, offset),
     };
 
     let (pairs, offset) = if pairs.is_none() {
         match try_parse_specific_binary_operator(code, tokens, offset, "=>") {
             Ok((left_right_pairs, new_offset)) => (Some(vec![left_right_pairs]), new_offset), // TODO: return vec because there will be the sepBy parser as well
-            Err(_) => (pairs, offset)
+            Err(_) => (pairs, offset),
         }
     } else {
         (pairs, offset)
     };
 
     let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
-    let map = Expression::Map(Map {
+    let map = Map {
         items: pairs.unwrap_or_default(),
-    });
+    };
     Ok((map, offset))
 }
 
-fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> Result<(List, u64), ParseError> {
+fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "list")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "[")?;
     let (expressions, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
@@ -540,7 +580,7 @@ fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> Result<(List, 
     };
     let (_, offset) = try_parse_grammar_name(tokens, offset, "]")?;
 
-    let list = List { items: expressions };
+    let list = Expression::List(List { items: expressions });
     Ok((list, offset))
 }
 
@@ -550,7 +590,7 @@ fn try_parse_specific_binary_operator(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-    expected_operator: &str
+    expected_operator: &str,
 ) -> Result<((Expression, Expression), u64), ParseError> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
     let (left, offset) = try_parse_expression(code, tokens, offset)?;
@@ -558,6 +598,23 @@ fn try_parse_specific_binary_operator(
     let (right, offset) = try_parse_expression(code, tokens, offset)?;
     dbg!(left, right);
     todo!()
+}
+
+fn try_parse_attribute(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Attribute> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "@")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
+    let (attribute_name, offset) = try_parse_identifier(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
+    let (value, offset) = try_parse_expression(code, tokens, offset)?;
+
+    Ok((
+        Attribute {
+            name: attribute_name,
+            value: Box::new(value),
+        },
+        offset,
+    ))
 }
 
 fn try_parse_tuple(
@@ -644,7 +701,7 @@ fn try_parse_either_grammar_name<'a>(
 /// Grammar_name = alias means module names in the TS elixir grammar.
 /// e.g: ThisIsAnAlias, Elixir.ThisIsAlsoAnAlias
 /// as these are also technically atoms, we return them as atoms
-fn try_parse_alias(code: &str, tokens: &Vec<Node>, offset: u64) -> Result<(Atom, u64), ParseError> {
+fn try_parse_alias(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Atom> {
     let (atom_node, offset) = try_parse_grammar_name(tokens, offset, "alias")?;
     let atom_string = extract_node_text(code, atom_node);
     Ok((Atom(atom_string), offset))
@@ -654,28 +711,28 @@ fn try_parse_expression<'a>(
     code: &str,
     tokens: &Vec<Node<'a>>,
     offset: u64,
-) -> Result<(Expression, u64), ParseError> {
+) -> ParserResult<Expression> {
     try_parse_module(code, tokens, offset)
         .or_else(|_| try_parse_function_definition(code, tokens, offset))
         .or_else(|_| try_parse_call(code, tokens, offset))
         .or_else(|_| try_parse_do_block(code, tokens, offset))
         .or_else(|_| {
             try_parse_alias(code, tokens, offset)
-                .and_then(|(alias, offset)| Ok((Expression::Atom(alias), offset)))
+                .and_then(|(atom, offset)| Ok((Expression::Atom(atom), offset)))
         })
-        .or_else(|_| try_parse_nil(code, tokens, offset))
-        .or_else(|_| try_parse_bool(code, tokens, offset))
+        .or_else(|_| try_parse_nil(tokens, offset))
+        .or_else(|_| try_parse_bool(tokens, offset))
         .or_else(|_| try_parse_atom(code, tokens, offset))
         .or_else(|_| try_parse_quoted_atom(code, tokens, offset))
-        .or_else(|_| {
-            try_parse_list(code, tokens, offset)
-                .and_then(|(list, offset)| Ok((Expression::List(list), offset)))
-        })
+        .or_else(|_| try_parse_list(code, tokens, offset))
         .or_else(|_| {
             try_parse_tuple(code, tokens, offset)
                 .and_then(|(tuple, offset)| Ok((Expression::Tuple(tuple), offset)))
         })
-        .or_else(|_| try_parse_map(code, tokens, offset))
+        .or_else(|_| {
+            try_parse_map(code, tokens, offset)
+                .and_then(|(map, offset)| Ok((Expression::Map(map), offset)))
+        })
         .or_else(|_| {
             try_parse_identifier(code, tokens, offset)
                 .and_then(|(identifier, offset)| Ok((Expression::Identifier(identifier), offset)))
@@ -683,6 +740,10 @@ fn try_parse_expression<'a>(
         .or_else(|_| {
             try_parse_integer(code, tokens, offset)
                 .and_then(|(integer, offset)| Ok((Expression::Integer(integer), offset)))
+        })
+        .or_else(|_| {
+            try_parse_attribute(code, tokens, offset)
+                .and_then(|(attribute, offset)| Ok((Expression::Attribute(attribute), offset)))
         })
         .or_else(|_| {
             try_parse_float(code, tokens, offset)
@@ -746,7 +807,7 @@ mod tests {
 
     #[test]
     fn parse_atom_with_quotes() {
-        let code = ":\"mywebsite@is_an_atom.com\"";
+        let code = r#":"mywebsite@is_an_atom.com""#;
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Atom(Atom(
@@ -917,7 +978,7 @@ mod tests {
 
     #[test]
     fn parse_string() {
-        let code = "\"string!\"";
+        let code = r#""string!""#;
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::String("string!".to_string())]);
@@ -938,12 +999,12 @@ mod tests {
 
     #[test]
     fn parse_multiline_string() {
-        let code = "
-        \"\"\"
+        let code = r#"
+        """
         Multiline!
         String!
-        \"\"\"
-        ";
+        """
+        "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::String(
             "\n        Multiline!\n        String!\n        ".to_string(),
@@ -1016,6 +1077,7 @@ mod tests {
                 Expression::FunctionDef(Function {
                     name: Identifier("func".to_string()),
                     is_private: false,
+                    parameters: vec![],
                     block: Box::new(Block(vec![Expression::Call(Call {
                         target: Identifier("priv_func".to_string()),
                         remote_callee: None,
@@ -1025,6 +1087,7 @@ mod tests {
                 Expression::FunctionDef(Function {
                     name: Identifier("priv_func".to_string()),
                     is_private: true,
+                    parameters: vec![],
                     block: Box::new(Block(vec![Expression::Integer(10)])),
                 }),
             ])),
@@ -1047,11 +1110,51 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: Identifier("func".to_string()),
             is_private: false,
+            parameters: vec![],
             block: Box::new(Block(vec![Expression::Call(Call {
                 target: Identifier("priv_func".to_string()),
                 remote_callee: None,
                 arguments: vec![],
             })])),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_function_no_parameters_parenthesis() {
+        let code = "
+        def func() do
+        end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("func".to_string()),
+            is_private: false,
+            block: Box::new(Block(vec![])),
+            parameters: vec![],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    // TODO: parse default value parameters (\\)
+    #[test]
+    fn parse_function_with_parameters() {
+        let code = "
+        def func(a, b, c) do
+        end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("func".to_string()),
+            is_private: false,
+            block: Box::new(Block(vec![])),
+            parameters: vec![
+                Identifier("a".to_string()),
+                Identifier("b".to_string()),
+                Identifier("c".to_string()),
+            ]
         })]);
 
         assert_eq!(result, target);
@@ -1187,9 +1290,9 @@ mod tests {
 
     #[test]
     fn parse_map_string_keys() {
-        let code = "
-        %{\"a\" => 10, \"String\" => true, \"key\" =>    nil}
-        ";
+        let code = r#"
+        %{"a" => 10, "String" => true, "key" =>    nil}
+        "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
             items: vec![
@@ -1210,40 +1313,35 @@ mod tests {
 
     // TODO: parse atom with quoted atom keys
     // %{"a": 10}
-    #[test]
-    fn parse_map_quoted_atom_keys() {
-        // TODO: logic should be added to quoted_keyword and return atom transparently from ther
-        let code = "
-        %{\"a\": 10, \"myweb@site.com\":   true}
-        ";
-        let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Map(Map {
-            items: vec![
-                (
-                    Expression::Atom(Atom("a".to_string())),
-                    Expression::Integer(10),
-                ),
-                (
-                    Expression::Atom(Atom("b".to_string())),
-                    Expression::Bool(true),
-                ),
-                (Expression::Atom(Atom("c".to_string())), Expression::Nil),
-            ],
-        })]);
+    // #[test]
+    // fn parse_map_quoted_atom_keys() {
+    //     // TODO: logic should be added to quoted_keyword and return atom transparently from ther
+    //     let code = "
+    //     %{\"a\": 10, \"myweb@site.com\":   true}
+    //     ";
+    //     let result = parse(&code).unwrap();
+    //     let target = Block(vec![Expression::Map(Map {
+    //         items: vec![
+    //             (
+    //                 Expression::Atom(Atom("a".to_string())),
+    //                 Expression::Integer(10),
+    //             ),
+    //             (
+    //                 Expression::Atom(Atom("b".to_string())),
+    //                 Expression::Bool(true),
+    //             ),
+    //             (Expression::Atom(Atom("c".to_string())), Expression::Nil),
+    //         ],
+    //     })]);
 
-        assert_eq!(result, target);
-    }
+    //     assert_eq!(result, target);
+    // }
 
     #[test]
     fn parse_empty_map() {
         let code = "%{}";
         let result = parse(&code).unwrap();
-        let target = Block(vec![
-                Expression::Map(Map {
-                    items: vec![],
-                })
-            ]
-        );
+        let target = Block(vec![Expression::Map(Map { items: vec![] })]);
 
         assert_eq!(result, target);
     }
@@ -1257,15 +1355,44 @@ mod tests {
         }
         ";
         let result = parse(&code).unwrap();
-        let target = Block(vec![
-                Expression::Map(Map {
-                    items: vec![],
-                })
-            ]
-        );
+        let target = Block(vec![Expression::Map(Map { items: vec![] })]);
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_attribute() {
+        let code = "@timeout 5_000";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Attribute(Attribute {
+            name: Identifier("timeout".to_string()),
+            value: Box::new(Expression::Integer(5000)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    // #[test]
+    // fn parse_parse_attributes_inside_module() {
+    //     let code = r#"
+    //     defmodule MyModule do
+    //         @moduledoc """
+    //         This is a nice module!
+    //         """
+
+    //         @doc """
+    //         This is a nice function!
+    //         """
+    //         def func() do
+    //             10
+    //         end
+    //     end
+    //     "#;
+    //     let result = parse(&code).unwrap();
+    //     let target = Block(vec![ ]);
+
+    //     assert_eq!(result, target);
+    // }
 
     // #[test]
     // fn parse_map_with_expression_keys() {
