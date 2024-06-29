@@ -39,7 +39,13 @@ struct Tuple {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Map {
-    items: Vec<(Expression, Expression)>,
+    entries: Vec<(Expression, Expression)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Struct {
+    name: Atom,
+    entries: Vec<(Expression, Expression)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,6 +78,7 @@ enum Expression {
     Integer(i128),
     Atom(Atom),
     Map(Map),
+    Struct(Struct),
     KeywordList(Keyword),
     List(List),
     Tuple(Tuple),
@@ -125,9 +132,7 @@ fn get_tree(code: &str) -> Tree {
 
 fn main() {
     // %{a: 10, b: true, c: nil}
-    let code = r#"
-    :"hello #{name} allaal
-    "#;
+    let code = r#""#;
 
     let result = parse(&code);
     dbg!(result);
@@ -140,6 +145,11 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     flatten_node_children(code, root_node, &mut nodes);
     dbg!(&nodes);
     let tokens = nodes.clone();
+
+    if tokens.len() == 0 {
+        return Ok(Expression::Block(vec![]));
+    }
+
     let (result, _) = parse_many(&code, &tokens, 0, try_parse_expression)?;
     Ok(Expression::Block(result))
 }
@@ -476,8 +486,8 @@ fn try_parse_keyword_pair(
                 .to_string();
 
             (Atom(clean_atom), offset)
-        },
-        Err(_) => try_parse_quoted_keyword(code, tokens, offset)?
+        }
+        Err(_) => try_parse_quoted_keyword(code, tokens, offset)?,
     };
 
     let (value, offset) = try_parse_expression(code, tokens, offset)?;
@@ -576,8 +586,40 @@ fn try_parse_map(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Ma
 
     let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
     let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
-    let map = Map { items: pairs };
+    let map = Map { entries: pairs };
     Ok((map, offset))
+}
+
+fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Struct> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "map")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "%")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "struct")?;
+    let (struct_name, offset) = try_parse_alias(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "{")?;
+
+    // TODO: why is this the only case with a very weird and different grammar_name than what's
+    // shown on debug? dbg!() for the Node says it's map_content but it's rather _items_with_trailing_separator
+    let offset = try_consume(code, tokens, offset, |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "_items_with_trailing_separator")
+    });
+
+    // let key_value_parser =
+    //     |code, tokens, offset| try_parse_specific_binary_operator(code, tokens, offset, "=>");
+    // let comma_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
+    // let (expression_pairs, offset) =
+    //     try_parse_sep_by(code, tokens, offset, key_value_parser, comma_parser)
+    //         .unwrap_or_else(|_| (vec![], offset));
+
+    // Keyword-notation-only map
+    let (keyword_pairs, offset) = match try_parse_keyword_expressions(code, tokens, offset) {
+        Ok((keyword, new_offset)) => (keyword.pairs, new_offset),
+        Err(_) => (vec![], offset),
+    };
+
+    // let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
+    let s = Struct { name: struct_name, entries: keyword_pairs };
+    Ok((s, offset))
 }
 
 fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -747,6 +789,10 @@ fn try_parse_expression<'a>(
         .or_else(|_| {
             try_parse_map(code, tokens, offset)
                 .and_then(|(map, offset)| Ok((Expression::Map(map), offset)))
+        })
+        .or_else(|_| {
+            try_parse_struct(code, tokens, offset)
+                .and_then(|(s, offset)| Ok((Expression::Struct(s), offset)))
         })
         .or_else(|_| {
             try_parse_identifier(code, tokens, offset)
@@ -1311,7 +1357,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
-            items: vec![
+            entries: vec![
                 (
                     Expression::Atom(Atom("a".to_string())),
                     Expression::Integer(10),
@@ -1334,7 +1380,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
-            items: vec![
+            entries: vec![
                 (Expression::String("a".to_owned()), Expression::Integer(10)),
                 (
                     Expression::String("String".to_owned()),
@@ -1355,7 +1401,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
-            items: vec![
+            entries: vec![
                 (Expression::String("a".to_owned()), Expression::Integer(10)),
                 (
                     Expression::String("String".to_owned()),
@@ -1380,7 +1426,7 @@ mod tests {
 
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
-            items: vec![
+            entries: vec![
                 (
                     Expression::Atom(Atom("a".to_string())),
                     Expression::Integer(10),
@@ -1399,7 +1445,7 @@ mod tests {
     fn parse_empty_map() {
         let code = "%{}";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Map(Map { items: vec![] })]);
+        let target = Block(vec![Expression::Map(Map { entries: vec![] })]);
 
         assert_eq!(result, target);
     }
@@ -1413,7 +1459,7 @@ mod tests {
         }
         ";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Map(Map { items: vec![] })]);
+        let target = Block(vec![Expression::Map(Map { entries: vec![] })]);
 
         assert_eq!(result, target);
     }
@@ -1430,27 +1476,78 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // #[test]
-    // fn parse_parse_attributes_inside_module() {
-    //     let code = r#"
-    //     defmodule MyModule do
-    //         @moduledoc """
-    //         This is a nice module!
-    //         """
+    #[test]
+    fn parse_attributes_inside_module() {
+        let code = r#"
+        defmodule MyModule do
+            @moduledoc """
+            This is a nice module!
+            """
 
-    //         @doc """
-    //         This is a nice function!
-    //         """
-    //         def func() do
-    //             10
-    //         end
-    //     end
-    //     "#;
-    //     let result = parse(&code).unwrap();
-    //     let target = Block(vec![ ]);
+            @doc """
+            This is a nice function!
+            """
+            def func() do
+                10
+            end
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Module(Module {
+            name: Atom("MyModule".to_string()),
+            body: Box::new(Expression::Block(vec![
+                Expression::Attribute(Attribute {
+                    name: Identifier("moduledoc".to_string()),
+                    value: Box::new(Expression::String(
+                        "\n            This is a nice module!\n            ".to_string(),
+                    )),
+                }),
+                Expression::Attribute(Attribute {
+                    name: Identifier("doc".to_string()),
+                    value: Box::new(Expression::String(
+                        "\n            This is a nice function!\n            ".to_string(),
+                    )),
+                }),
+                Expression::FunctionDef(Function {
+                    name: Identifier("func".to_string()),
+                    is_private: false,
+                    block: Box::new(Expression::Block(vec![Expression::Integer(10)])),
+                    parameters: vec![],
+                }),
+            ])),
+        })]);
 
-    //     assert_eq!(result, target);
-    // }
+        assert_eq!(result, target);
+    }
 
-    // TODO: parse structs
+    #[test]
+    fn parse_empty_block_for_empty_input() {
+        let code = "";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![]);
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_struct() {
+        let code = r#"
+        %MyApp.User{name: "john", age: 25}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Struct(Struct {
+            name: Atom("MyApp.User".to_string()),
+            entries: vec![
+                (
+                    Expression::Atom(Atom("name".to_string())),
+                    Expression::String("john".to_string())
+                ),
+                (
+                    Expression::Atom(Atom("age".to_string())),
+                    Expression::Integer(25)
+                ),
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
