@@ -464,24 +464,36 @@ fn try_parse_keyword_pair(
     offset: u64,
 ) -> ParserResult<(Expression, Expression)> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "pair")?;
-    let (key_node, offset) = try_parse_grammar_name(tokens, offset, "keyword")?;
-    let atom_text = extract_node_text(&code, key_node);
-    // transform atom string from `atom: ` into `atom`
-    let clean_atom = atom_text
-        .replace(" ", "")
-        .strip_suffix(":")
-        .unwrap()
-        .to_string();
-    let key = Expression::Atom(Atom(clean_atom));
+
+    let (atom, offset) = match try_parse_grammar_name(tokens, offset, "keyword") {
+        Ok((atom_node, offset)) => {
+            let atom_text = extract_node_text(&code, atom_node);
+            // transform atom string from `atom: ` into `atom`
+            let clean_atom = atom_text
+                .replace(" ", "")
+                .strip_suffix(":")
+                .unwrap()
+                .to_string();
+
+            (Atom(clean_atom), offset)
+        },
+        Err(_) => try_parse_quoted_keyword(code, tokens, offset)?
+    };
+
     let (value, offset) = try_parse_expression(code, tokens, offset)?;
-    let pair = (key, value);
+    let pair = (Expression::Atom(atom), value);
     Ok((pair, offset))
 }
 
-// keywords should always come last in lists and maps
-// TODO: parse keywords inside lists
-// iex(1)> [10, b: 30]
-// [10, {:b, 30}]
+fn try_parse_quoted_keyword(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Atom> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "quoted_keyword")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
+    // TODO: create function to parse quoted_content
+    let (atom_node, offset) = try_parse_grammar_name(tokens, offset, "quoted_content")?;
+    let atom_string = extract_node_text(code, atom_node);
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
+    Ok((Atom(atom_string), offset))
+}
 
 fn try_parse_do_block<'a>(
     code: &str,
@@ -571,11 +583,16 @@ fn try_parse_map(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Ma
 fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "list")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "[")?;
-    let (expressions, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
-        Ok(result) => result,
-        Err(_) => (vec![], offset),
-    };
+
+    let (expressions, offset) =
+        parse_expressions_sep_by_comma(code, tokens, offset).unwrap_or_else(|_| (vec![], offset));
+
+    let (keyword, offset) = try_parse_keyword_expressions(code, tokens, offset)
+        .and_then(|(keyword, offset)| Ok((Some(Expression::KeywordList(keyword)), offset)))
+        .unwrap_or_else(|_| (None, offset));
+
     let (_, offset) = try_parse_grammar_name(tokens, offset, "]")?;
+    let expressions = expressions.into_iter().chain(keyword).collect();
 
     let list = Expression::List(List { items: expressions });
     Ok((list, offset))
@@ -874,6 +891,8 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    // TODO: test function call with keyword arguments
 
     #[test]
     fn parse_local_call() {
@@ -1197,6 +1216,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_list_with_keyword() {
+        let code = "
+        [a, b, module: :atom,   number: 200]
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::List(List {
+            items: vec![
+                Expression::Identifier(Identifier("a".to_string())),
+                Expression::Identifier(Identifier("b".to_string())),
+                Expression::KeywordList(Keyword {
+                    pairs: vec![
+                        (
+                            Expression::Atom(Atom("module".to_string())),
+                            Expression::Atom(Atom("atom".to_string())),
+                        ),
+                        (
+                            Expression::Atom(Atom("number".to_string())),
+                            Expression::Integer(200),
+                        ),
+                    ],
+                }),
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_empty_list() {
         let code = "[]";
         let result = parse(&code).unwrap();
@@ -1325,31 +1372,28 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: parse atom with quoted atom keys
-    // %{"a": 10}
-    // #[test]
-    // fn parse_map_quoted_atom_keys() {
-    //     // TODO: logic should be added to quoted_keyword and return atom transparently from ther
-    //     let code = "
-    //     %{\"a\": 10, \"myweb@site.com\":   true}
-    //     ";
-    //     let result = parse(&code).unwrap();
-    //     let target = Block(vec![Expression::Map(Map {
-    //         items: vec![
-    //             (
-    //                 Expression::Atom(Atom("a".to_string())),
-    //                 Expression::Integer(10),
-    //             ),
-    //             (
-    //                 Expression::Atom(Atom("b".to_string())),
-    //                 Expression::Bool(true),
-    //             ),
-    //             (Expression::Atom(Atom("c".to_string())), Expression::Nil),
-    //         ],
-    //     })]);
+    #[test]
+    fn parse_map_quoted_atom_keys() {
+        let code = r#"
+        %{"a": 10, "myweb@site.com":   true}
+        "#;
 
-    //     assert_eq!(result, target);
-    // }
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Map(Map {
+            items: vec![
+                (
+                    Expression::Atom(Atom("a".to_string())),
+                    Expression::Integer(10),
+                ),
+                (
+                    Expression::Atom(Atom("myweb@site.com".to_string())),
+                    Expression::Bool(true),
+                ),
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
 
     #[test]
     fn parse_empty_map() {
