@@ -69,6 +69,98 @@ struct Call {
 type ParserResult<T> = Result<(T, u64), ParseError>;
 type Parser<'a, T> = fn(&'a str, &'a Vec<Node<'a>>, u64) -> ParserResult<T>;
 
+///  Operators that are parsed and can be overriden by libraries.
+///  &&&
+///  <<<
+///  >>>
+///  <<~
+///  ~>>
+///  <~
+///  ~>
+///  <~>
+///  +++
+///  ---
+#[derive(Debug, PartialEq, Eq)]
+struct CustomOperator {
+    operator: String,
+    left: Box<Expression>,
+    right: Box<Expression>,
+}
+
+/// Check https://hexdocs.pm/elixir/1.17.1/operators.html for more info
+#[derive(Debug, PartialEq, Eq)]
+enum BinaryOperator {
+    /// +
+    Plus(Expression, Expression),
+    /// -
+    Minus(Expression, Expression),
+    /// /
+    Div(Expression, Expression),
+    /// *
+    Star(Expression, Expression),
+    /// ++
+    ListConcatenation(Expression, Expression),
+    /// --
+    ListSubtraction(Expression, Expression),
+    /// and
+    StrictAnd(Expression, Expression),
+    /// &&
+    RelaxedAnd(Expression, Expression),
+    /// or
+    StrictOr(Expression, Expression),
+    /// ||
+    RelaxedOr(Expression, Expression),
+    /// in
+    In(Expression, Expression),
+    /// not in
+    NotIn(Expression, Expression),
+    /// <>
+    BinaryConcat(Expression, Expression),
+    /// |>
+    Pipe(Expression, Expression),
+    /// =~
+    TextSearch(Expression, Expression),
+    /// ==
+    Equal(Expression, Expression),
+    /// Range
+    Range(Expression, Expression, Option<Expression>),
+    /// ===
+    StrictEqual(Expression, Expression),
+    /// !=
+    NotEqual(Expression, Expression),
+    /// !==
+    StrictNotEqual(Expression, Expression),
+    /// <
+    LessThan(Expression, Expression),
+    /// >
+    GreaterThan(Expression, Expression),
+    /// <=
+    LessThanOrEqual(Expression, Expression),
+    /// >=
+    GreaterThanOrEqual(Expression, Expression),
+    /// Custom operators allowed by the compiler
+    Custom(CustomOperator),
+}
+
+/// Check https://hexdocs.pm/elixir/1.17.1/operators.html for more info
+#[derive(Debug, PartialEq, Eq)]
+enum UnaryOperator {
+    /// not
+    StrictNot,
+    /// !
+    RelaxedNot,
+    /// +
+    Plus,
+    /// -
+    Minus,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct UnaryOperation {
+    operator: UnaryOperator,
+    operand: Box<Expression>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Expression {
     Bool(bool),
@@ -87,6 +179,8 @@ enum Expression {
     Module(Module),
     Attribute(Attribute),
     FunctionDef(Function),
+    BinaryOperation(Box<BinaryOperator>),
+    UnaryOperation(UnaryOperation),
     // TODO: anonymous functions
     // TODO: function capture
     //
@@ -271,13 +365,7 @@ fn try_parse_grammar_name<'a>(
     if actual == expected {
         Ok((token, offset + 1))
     } else {
-        let point = token.start_position();
-        Err(ParseError {
-            file: "nofile".to_string(), // TODO: return file from here
-            line: point.row,
-            column: point.column,
-            error_type: ErrorType::UnexpectedToken(expected.to_string(), actual.to_string()),
-        })
+        Err(build_unexpected_token_error(expected, &token))
     }
 }
 
@@ -293,13 +381,7 @@ fn try_parse_identifier<'a>(
         let identifier_name = extract_node_text(code, token);
         Ok((Identifier(identifier_name), offset + 1))
     } else {
-        let point = token.start_position();
-        Err(ParseError {
-            file: "nofile".to_string(), // TODO: return file from here
-            line: point.row,
-            column: point.column,
-            error_type: ErrorType::UnexpectedToken("identifier".to_string(), actual.to_string()),
-        })
+        Err(build_unexpected_token_error("identifier", &token))
     }
 }
 
@@ -316,13 +398,7 @@ fn try_parse_keyword<'a>(
     if grammar_name == "identifier" && identifier_name == keyword {
         Ok((Identifier(identifier_name), offset + 1))
     } else {
-        let point = token.start_position();
-        Err(ParseError {
-            file: "nofile".to_string(), // TODO: return file from here
-            line: point.row,
-            column: point.column,
-            error_type: ErrorType::UnexpectedToken(keyword.to_string(), grammar_name.to_string()),
-        })
+        Err(build_unexpected_token_error(keyword, &token))
     }
 }
 
@@ -618,7 +694,10 @@ fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
 
     // let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
     let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
-    let s = Struct { name: struct_name, entries: keyword_pairs };
+    let s = Struct {
+        name: struct_name,
+        entries: keyword_pairs,
+    };
     Ok((s, offset))
 }
 
@@ -739,16 +818,8 @@ fn try_parse_either_grammar_name<'a>(
     }
 
     let token = tokens[offset as usize];
-    let point = token.start_position();
-    Err(ParseError {
-        file: "nofile".to_string(), // TODO: return file from here
-        line: point.row,
-        column: point.column,
-        error_type: ErrorType::UnexpectedToken(
-            grammar_names.join(", "),
-            token.grammar_name().to_string(),
-        ),
-    })
+    let expected = grammar_names.join(", ");
+    Err(build_unexpected_token_error(&expected, &token))
 }
 
 /// Grammar_name = alias means module names in the TS elixir grammar.
@@ -790,6 +861,7 @@ fn try_parse_expression<'a>(
             try_parse_map(code, tokens, offset)
                 .and_then(|(map, offset)| Ok((Expression::Map(map), offset)))
         })
+        .or_else(|_| try_parse_unary_operator(code, tokens, offset))
         .or_else(|_| {
             try_parse_struct(code, tokens, offset)
                 .and_then(|(s, offset)| Ok((Expression::Struct(s), offset)))
@@ -810,6 +882,47 @@ fn try_parse_expression<'a>(
             try_parse_float(code, tokens, offset)
                 .and_then(|(float, offset)| Ok((Expression::Float(float), offset)))
         })
+}
+
+fn try_parse_unary_operator(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (operator, offset) = try_parse_unary_operator_node(tokens, offset)?;
+    let (operand, offset) = try_parse_expression(code, tokens, offset)?;
+    let operation = Expression::UnaryOperation(UnaryOperation {
+        operator,
+        operand: Box::new(operand),
+    });
+    Ok((operation, offset))
+}
+
+fn try_parse_unary_operator_node(tokens: &Vec<Node>, offset: u64) -> ParserResult<UnaryOperator> {
+    let token = tokens[offset as usize];
+    let operator = token.grammar_name();
+    match operator {
+        "+" => Ok((UnaryOperator::Plus, offset + 1)),
+        "-" => Ok((UnaryOperator::Minus, offset + 1)),
+        "!" => Ok((UnaryOperator::RelaxedNot, offset + 1)),
+        "not" => Ok((UnaryOperator::StrictNot, offset + 1)),
+        _ => Err(build_unexpected_token_error("unary_operator", &token)),
+    }
+}
+
+fn build_unexpected_token_error(expected: &str, actual_token: &Node) -> ParseError {
+    let point = actual_token.start_position();
+
+    ParseError {
+        file: "nofile".to_string(), // TODO: return file from here
+        line: point.row,
+        column: point.column,
+        error_type: ErrorType::UnexpectedToken(
+            expected.to_string(),
+            actual_token.grammar_name().to_string(),
+        ),
+    }
 }
 
 fn parse_many<'a, T>(
@@ -1539,15 +1652,80 @@ mod tests {
             entries: vec![
                 (
                     Expression::Atom(Atom("name".to_string())),
-                    Expression::String("john".to_string())
+                    Expression::String("john".to_string()),
                 ),
                 (
                     Expression::Atom(Atom("age".to_string())),
-                    Expression::Integer(25)
+                    Expression::Integer(25),
                 ),
             ],
         })]);
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_unary_plus() {
+        let code = "+10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
+            operator: UnaryOperator::Plus,
+            operand: Box::new(Expression::Integer(10)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_unary_minus() {
+        let code = "-1000";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
+            operator: UnaryOperator::Minus,
+            operand: Box::new(Expression::Integer(1000)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_unary_strict_not() {
+        let code = "not true";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
+            operator: UnaryOperator::StrictNot,
+            operand: Box::new(Expression::Bool(true)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_unary_relaxed_not() {
+        let code = "!false";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
+            operator: UnaryOperator::RelaxedNot,
+            operand: Box::new(Expression::Bool(false)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_chained_unary_operators() {
+        let code = "!!false";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
+            operator: UnaryOperator::RelaxedNot,
+            operand: Box::new(Expression::UnaryOperation(UnaryOperation {
+                operator: UnaryOperator::RelaxedNot,
+                operand: Box::new(Expression::Bool(false)),
+            })),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    // TODO: test unary not
 }
