@@ -43,13 +43,20 @@ enum Expression {
     Float(Float),
     Integer(i128),
     Atom(Atom),
+    // TODO: Map(Map)
+    // TODO: KeywordList(KeywordList)
+    // TODO: List(List)
+    // TODO: Tuple(Tuple)
     Identifier(Identifier),
     Block(Vec<Expression>),
     Module(Module),
     FunctionDef(Function),
     // TODO: anonymous functions
     // TODO: function capture
-    // TODO: macro
+    //
+    // TODO: double check whether quote accepts compiler metadata like `quote [keep: true] do`
+    // TODO: Quote(Block)
+    // TODO: MacroDef(Macro),
     Call(Call),
 }
 
@@ -241,7 +248,6 @@ fn try_parse_call(code: &str, tokens: &Vec<Node>, offset: u64) -> Option<(Expres
 
     let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
 
-    // TODO: if we match a opening, we need to match a closing one as well
     let (offset, has_parenthesis) = match try_parse_grammar_name(tokens, offset, "(") {
         Some((_node, new_offset)) => (new_offset, true),
         None => (offset, false),
@@ -309,13 +315,9 @@ fn try_parse_do_block<'a>(
     offset: u64,
 ) -> Option<(Expression, u64)> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "do_block")?;
-
     let (_, offset) = try_parse_grammar_name(tokens, offset, "do")?;
-
     let (body, offset) = parse_many_expressions(code, tokens, offset)?;
-
     let (_, offset) = try_parse_grammar_name(tokens, offset, "end")?;
-
     Some((Expression::Block(body), offset))
 }
 
@@ -761,4 +763,26 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_function_oneliner() {
+        // TODO: before adding this one, add suport to parsing keyword lists
+        let code = "
+        def func, do: priv_func()
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("func".to_string()),
+            is_private: false,
+            block: Box::new(Block(vec![Expression::Call(Call {
+                target: Identifier("priv_func".to_string()),
+                remote_callee: None,
+                arguments: vec![],
+            })])),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    // TODO: add @doc to function struct as a field to show in lsp hover
 }
