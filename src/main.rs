@@ -18,7 +18,8 @@ struct Atom(String);
 struct Function {
     name: Identifier,
     is_private: bool,
-    block: Box<Expression>,
+    body: Box<Expression>,
+    guard_expression: Option<Box<Expression>>,
     parameters: Vec<Identifier>,
 }
 
@@ -175,6 +176,13 @@ struct UnaryOperation {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct IfExpression {
+    condition_expression: Box<Expression>,
+    do_expression: Box<Expression>,
+    else_expression: Option<Box<Expression>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum Expression {
     Bool(bool),
     Nil,
@@ -195,6 +203,12 @@ enum Expression {
     BinaryOperation(BinaryOperation),
     UnaryOperation(UnaryOperation),
     Range(Range),
+    // TODO: support guards before start working on case
+    // TODO: case
+    // TODO: cond
+    If(IfExpression),
+    // TODO: unless
+    //
     // TODO: anonymous functions
     // TODO: function capture
     //
@@ -324,6 +338,23 @@ fn try_parse_function_definition(
     let call_consumer = |_, tokens, offset| try_parse_grammar_name(tokens, offset, "call");
     let offset = try_consume(code, tokens, offset, call_consumer);
 
+    match try_parse_guard(code, tokens, offset) {
+        Ok(((guard_expr, parameters, function_name), offset)) => {
+            let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+
+            let function = Expression::FunctionDef(Function {
+                name: function_name,
+                body: Box::new(do_block),
+                guard_expression: Some(Box::new(guard_expr)),
+                parameters,
+                is_private,
+            });
+
+            return Ok((function, offset));
+        }
+        Err(_) => {}
+    };
+
     let (function_name, offset) = try_parse_identifier(&code, tokens, offset)?;
 
     let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
@@ -335,12 +366,35 @@ fn try_parse_function_definition(
 
     let function = Expression::FunctionDef(Function {
         name: function_name,
-        block: Box::new(do_block),
+        body: Box::new(do_block),
+        guard_expression: None,
         parameters,
         is_private,
     });
 
     Ok((function, offset))
+}
+
+fn try_parse_guard(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<(Expression, Vec<Identifier>, Identifier)> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
+    let (function_name, offset) = try_parse_identifier(code, tokens, offset)?;
+
+    let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
+        Ok(result) => result,
+        Err(_) => (vec![], offset),
+    };
+
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "when")?;
+
+    let (guard_expression, offset) =
+        try_parse_expression(code, tokens, offset).and_then(|(expr, offset)| Ok((expr, offset)))?;
+
+    Ok(((guard_expression, parameters, function_name), offset))
 }
 
 fn try_parse_parameters(
@@ -901,6 +955,7 @@ fn try_parse_expression<'a>(
 ) -> ParserResult<Expression> {
     try_parse_module(code, tokens, offset)
         .or_else(|_| try_parse_function_definition(code, tokens, offset))
+        .or_else(|_| try_parse_if_expression(code, tokens, offset))
         .or_else(|_| try_parse_call(code, tokens, offset))
         .or_else(|_| try_parse_do_block(code, tokens, offset))
         .or_else(|_| {
@@ -979,6 +1034,51 @@ fn try_parse_binary_operator(
         right: Box::new(right),
     });
     Ok((operation, offset))
+}
+
+fn try_parse_if_expression(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
+    let (_, offset) = try_parse_keyword(code, tokens, offset, "if")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
+    dbg!(offset);
+    let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
+
+    // TODO: we need an abstraction to parse one block inside another
+    // like this:
+    //
+    // do
+    //
+    // else <second_block>
+    //
+    // end
+    //
+    // this will be useful for other things such as rescue, after and catch
+    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+
+    let (else_block, offset) = try_parse_else_block(code, tokens, offset)
+        .and_then(|(else_expression, offset)| Ok((Some(Box::new(else_expression)), offset)))
+        .unwrap_or_else(|_| (None, offset));
+
+    let if_expr = Expression::If(IfExpression {
+        condition_expression: Box::new(condition_expression),
+        do_expression: Box::new(do_block),
+        else_expression: else_block,
+    });
+
+    Ok((if_expr, offset))
+}
+
+fn try_parse_else_block(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "else_block")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "else")?;
+    let (body, offset) =
+        parse_many(code, tokens, offset, try_parse_expression).unwrap_or_else(|_| (vec![], offset));
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "end")?;
+    Ok((Expression::Block(body), offset))
 }
 
 fn try_parse_unary_operator_node(tokens: &Vec<Node>, offset: u64) -> ParserResult<UnaryOperator> {
@@ -1457,17 +1557,19 @@ mod tests {
                     name: Identifier("func".to_string()),
                     is_private: false,
                     parameters: vec![],
-                    block: Box::new(Block(vec![Expression::Call(Call {
+                    body: Box::new(Block(vec![Expression::Call(Call {
                         target: Identifier("priv_func".to_string()),
                         remote_callee: None,
                         arguments: vec![],
                     })])),
+                    guard_expression: None,
                 }),
                 Expression::FunctionDef(Function {
                     name: Identifier("priv_func".to_string()),
                     is_private: true,
                     parameters: vec![],
-                    block: Box::new(Block(vec![Expression::Integer(10)])),
+                    body: Box::new(Block(vec![Expression::Integer(10)])),
+                    guard_expression: None,
                 }),
             ])),
         })]);
@@ -1475,7 +1577,6 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: parse functions with parameters
     // TODO: parse functions with default values parameters (\\)
 
     #[test]
@@ -1490,11 +1591,39 @@ mod tests {
             name: Identifier("func".to_string()),
             is_private: false,
             parameters: vec![],
-            block: Box::new(Block(vec![Expression::Call(Call {
+            body: Box::new(Block(vec![Expression::Call(Call {
                 target: Identifier("priv_func".to_string()),
                 remote_callee: None,
                 arguments: vec![],
             })])),
+            guard_expression: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_function_with_guard_expression() {
+        let code = "
+        def guarded(a) when is_integer(a) do
+            a == 10
+        end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("guarded".to_string()),
+            is_private: false,
+            parameters: vec![Identifier("a".to_string())],
+            body: Box::new(Block(vec![Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Equal,
+                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                right: Box::new(Expression::Integer(10)),
+            })])),
+            guard_expression: Some(Box::new(Expression::Call(Call {
+                target: Identifier("is_integer".to_string()),
+                remote_callee: None,
+                arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+            }))),
         })]);
 
         assert_eq!(result, target);
@@ -1510,8 +1639,9 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: Identifier("func".to_string()),
             is_private: false,
-            block: Box::new(Block(vec![])),
+            body: Box::new(Block(vec![])),
             parameters: vec![],
+            guard_expression: None,
         })]);
 
         assert_eq!(result, target);
@@ -1528,12 +1658,13 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: Identifier("func".to_string()),
             is_private: false,
-            block: Box::new(Block(vec![])),
+            body: Box::new(Block(vec![])),
             parameters: vec![
                 Identifier("a".to_string()),
                 Identifier("b".to_string()),
                 Identifier("c".to_string()),
             ],
+            guard_expression: None,
         })]);
 
         assert_eq!(result, target);
@@ -1871,8 +2002,9 @@ mod tests {
                 Expression::FunctionDef(Function {
                     name: Identifier("func".to_string()),
                     is_private: false,
-                    block: Box::new(Expression::Block(vec![Expression::Integer(10)])),
+                    body: Box::new(Expression::Block(vec![Expression::Integer(10)])),
                     parameters: vec![],
+                    guard_expression: None,
                 }),
             ])),
         })]);
@@ -2362,4 +2494,42 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    // TODO: parse these in keyword form as well
+    #[test]
+    fn parse_simple_if_expression() {
+        let code = r#"
+        if false do
+            :ok
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::If(IfExpression {
+            condition_expression: Box::new(Expression::Bool(false)),
+            do_expression: Box::new(Expression::Block(vec![Expression::Atom(Atom(
+                "ok".to_string(),
+            ))])),
+            else_expression: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_if_else_expression() {
+        let code = r#"
+        if a > 5 do
+            10
+        else
+            20
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![]);
+
+        assert_eq!(result, target);
+    }
 }
+
+// TODO: (fn a -> a + 1 end).(10)
+// think about calls whose callee is not an identifier but rather an expression
