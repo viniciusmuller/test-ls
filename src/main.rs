@@ -31,6 +31,7 @@ struct Module {
 #[derive(Debug, PartialEq, Eq)]
 struct List {
     items: Vec<Expression>,
+    cons: Option<Box<Expression>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -122,6 +123,8 @@ enum BinaryOperator {
     LessThanOrEqual,
     /// >=
     GreaterThanOrEqual,
+    // =
+    Match,
     ///  Operators that are parsed and can be overriden by libraries.
     ///  &&&
     ///  <<<
@@ -161,6 +164,8 @@ enum UnaryOperator {
     Plus,
     /// -
     Minus,
+    /// ^
+    Pin,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -475,7 +480,7 @@ fn try_parse_call(
         Err(err) => {
             dbg!(err);
             (vec![], offset)
-        },
+        }
     };
 
     let offset = if has_parenthesis {
@@ -688,13 +693,6 @@ fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
         try_parse_grammar_name(tokens, offset, "_items_with_trailing_separator")
     });
 
-    // let key_value_parser =
-    //     |code, tokens, offset| try_parse_specific_binary_operator(code, tokens, offset, "=>");
-    // let comma_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
-    // let (expression_pairs, offset) =
-    //     try_parse_sep_by(code, tokens, offset, key_value_parser, comma_parser)
-    //         .unwrap_or_else(|_| (vec![], offset));
-
     // Keyword-notation-only map
     let (keyword_pairs, offset) = match try_parse_keyword_expressions(code, tokens, offset) {
         Ok((keyword, new_offset)) => (keyword.pairs, new_offset),
@@ -717,15 +715,43 @@ fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<E
     let (expressions, offset) =
         parse_expressions_sep_by_comma(code, tokens, offset).unwrap_or_else(|_| (vec![], offset));
 
+    let (expr_before_cons, cons_expr, offset) = match try_parse_list_cons(code, tokens, offset) {
+        Ok(((expr_before_cons, cons_expr), offset)) => {
+            (Some(expr_before_cons), Some(Box::new(cons_expr)), offset)
+        }
+        Err(_) => (None, None, offset),
+    };
+
     let (keyword, offset) = try_parse_keyword_expressions(code, tokens, offset)
         .and_then(|(keyword, offset)| Ok((Some(Expression::KeywordList(keyword)), offset)))
         .unwrap_or_else(|_| (None, offset));
 
-    let (_, offset) = try_parse_grammar_name(tokens, offset, "]")?;
-    let expressions = expressions.into_iter().chain(keyword).collect();
+    dbg!(&keyword);
 
-    let list = Expression::List(List { items: expressions });
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "]")?;
+    let expressions = expressions
+        .into_iter()
+        .chain(expr_before_cons)
+        .chain(keyword)
+        .collect();
+
+    let list = Expression::List(List {
+        items: expressions,
+        cons: cons_expr,
+    });
     Ok((list, offset))
+}
+
+fn try_parse_list_cons(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<(Expression, Expression)> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+    let (expr_before_cons, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "|")?;
+    let (cons_expr, offset) = try_parse_expression(code, tokens, offset)?;
+    Ok(((expr_before_cons, cons_expr), offset))
 }
 
 fn try_parse_specific_binary_operator(
@@ -817,19 +843,23 @@ fn try_parse_string(
 /// It concatenates escape sequences and interpolations into the string
 fn try_parse_quoted_content(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<String> {
     parse_many(code, tokens, offset, |code, tokens, offset| {
-        let (string_node, offset) =
-            try_parse_grammar_name(tokens, offset, "quoted_content")
+        let (string_node, offset) = try_parse_grammar_name(tokens, offset, "quoted_content")
             .or_else(|_| try_parse_grammar_name(tokens, offset, "escape_sequence"))
             .or_else(|_| try_parse_interpolation(code, tokens, offset))?;
 
         let string_text = extract_node_text(code, string_node);
         Ok((string_text, offset))
-    }).and_then(|(strings, offset)| Ok((strings.join(""), offset)))
+    })
+    .and_then(|(strings, offset)| Ok((strings.join(""), offset)))
 }
 
 // interpolations are discarded for now
 // TODO: do not discard interpolations
-fn try_parse_interpolation<'a>(code: &str, tokens: &Vec<Node<'a>>, offset: u64) -> ParserResult<Node<'a>> {
+fn try_parse_interpolation<'a>(
+    code: &str,
+    tokens: &Vec<Node<'a>>,
+    offset: u64,
+) -> ParserResult<Node<'a>> {
     let (interpolation_node, offset) = try_parse_grammar_name(tokens, offset, "interpolation")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "#{")?;
     let (_, offset) = try_parse_expression(code, tokens, offset)?;
@@ -959,6 +989,7 @@ fn try_parse_unary_operator_node(tokens: &Vec<Node>, offset: u64) -> ParserResul
         "-" => Ok((UnaryOperator::Minus, offset + 1)),
         "!" => Ok((UnaryOperator::RelaxedNot, offset + 1)),
         "not" => Ok((UnaryOperator::StrictNot, offset + 1)),
+        "^" => Ok((UnaryOperator::Pin, offset + 1)),
         _ => Err(build_unexpected_token_error("unary_operator", &token)),
     }
 }
@@ -967,6 +998,7 @@ fn try_parse_binary_operator_node(tokens: &Vec<Node>, offset: u64) -> ParserResu
     let token = tokens[offset as usize];
     let operator = token.grammar_name();
     match operator {
+        "=" => Ok((BinaryOperator::Match, offset + 1)),
         "+" => Ok((BinaryOperator::Plus, offset + 1)),
         "-" => Ok((BinaryOperator::Minus, offset + 1)),
         "*" => Ok((BinaryOperator::Mult, offset + 1)),
@@ -1325,7 +1357,9 @@ mod tests {
         let code = "\"hello world!\n different\nlines\nhere\"";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::String("hello world!\n different\nlines\nhere".to_string())]);
+        let target = Block(vec![Expression::String(
+            "hello world!\n different\nlines\nhere".to_string(),
+        )]);
 
         assert_eq!(result, target);
     }
@@ -1335,7 +1369,9 @@ mod tests {
         let code = r#""this is #{string_value}!""#;
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::String("this is #{string_value}!".to_string())]);
+        let target = Block(vec![Expression::String(
+            "this is #{string_value}!".to_string(),
+        )]);
 
         assert_eq!(result, target);
     }
@@ -1549,6 +1585,7 @@ mod tests {
                 Expression::Integer(10),
                 Expression::Atom(Atom("atom".to_string())),
             ],
+            cons: None,
         })]);
 
         assert_eq!(result, target);
@@ -1577,6 +1614,7 @@ mod tests {
                     ],
                 }),
             ],
+            cons: None,
         })]);
 
         assert_eq!(result, target);
@@ -1586,12 +1624,41 @@ mod tests {
     fn parse_empty_list() {
         let code = "[]";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::List(List { items: vec![] })]);
+        let target = Block(vec![Expression::List(List {
+            items: vec![],
+            cons: None,
+        })]);
 
         assert_eq!(result, target);
     }
 
-    // TODO: support list pipe syntax: [head | tail | tail2 | tail3]
+    #[test]
+    fn parse_list_cons() {
+        let code = "[head, 10 | _tail] = [1, 2, 3]";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Match,
+            left: Box::new(Expression::List(List {
+                items: vec![
+                    Expression::Identifier(Identifier("head".to_string())),
+                    Expression::Integer(10),
+                ],
+                cons: Some(Box::new(Expression::Identifier(Identifier(
+                    "_tail".to_string(),
+                )))),
+            })),
+            right: Box::new(Expression::List(List {
+                items: vec![
+                    Expression::Integer(1),
+                    Expression::Integer(2),
+                    Expression::Integer(3),
+                ],
+                cons: None,
+            })),
+        })]);
+
+        assert_eq!(result, target);
+    }
 
     #[test]
     fn parse_tuple() {
@@ -1908,6 +1975,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_unary_pin() {
+        let code = "^var";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
+            operator: UnaryOperator::Pin,
+            operand: Box::new(Expression::Identifier(Identifier("var".to_string()))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_binary_plus() {
         let code = "20 + 40";
         let result = parse(&code).unwrap();
@@ -1971,6 +2050,7 @@ mod tests {
                     Expression::Integer(2),
                     Expression::Integer(3),
                 ],
+                cons: None,
             })),
             right: Box::new(Expression::Identifier(Identifier("tail".to_string()))),
         })]);
@@ -1991,6 +2071,7 @@ mod tests {
                     Expression::Integer(2),
                     Expression::Integer(3),
                 ],
+                cons: None,
             })),
         })]);
 
@@ -2062,6 +2143,7 @@ mod tests {
                     Expression::Integer(2),
                     Expression::Integer(3),
                 ],
+                cons: None,
             })),
         })]);
 
@@ -2081,6 +2163,7 @@ mod tests {
                     Expression::Integer(2),
                     Expression::Integer(3),
                 ],
+                cons: None,
             })),
         })]);
 
@@ -2222,7 +2305,7 @@ mod tests {
         let target = Block(vec![Expression::Range(Range {
             start: Box::new(Expression::Integer(0)),
             end: Box::new(Expression::Integer(10)),
-            step: None
+            step: None,
         })]);
 
         assert_eq!(result, target);
@@ -2235,7 +2318,46 @@ mod tests {
         let target = Block(vec![Expression::Range(Range {
             start: Box::new(Expression::Integer(0)),
             end: Box::new(Expression::Integer(10)),
-            step: Some(Box::new(Expression::Integer(2)))
+            step: Some(Box::new(Expression::Integer(2))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_match_identifier() {
+        let code = "my_var = 10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Match,
+            left: Box::new(Expression::Identifier(Identifier("my_var".to_string()))),
+            right: Box::new(Expression::Integer(10)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_match_expressions() {
+        let code = "10 = 10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Match,
+            left: Box::new(Expression::Integer(10)),
+            right: Box::new(Expression::Integer(10)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_match_wildcard() {
+        let code = "_ = 10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Match,
+            left: Box::new(Expression::Identifier(Identifier("_".to_string()))),
+            right: Box::new(Expression::Integer(10)),
         })]);
 
         assert_eq!(result, target);
