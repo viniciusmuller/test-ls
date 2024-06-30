@@ -1,7 +1,8 @@
 use core::fmt;
-use std::io;
+use std::{env, ffi::OsStr, fs, io, path::Path};
 
 use tree_sitter::{Node, Tree};
+use walkdir::{DirEntry, WalkDir};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Identifier(String);
@@ -183,6 +184,30 @@ struct IfExpression {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct Require {
+    target: Atom,
+    options: Option<Keyword>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Alias {
+    target: Atom,
+    options: Option<Keyword>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Use {
+    target: Atom,
+    options: Option<Keyword>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Import {
+    target: Atom,
+    options: Option<Keyword>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum Expression {
     Bool(bool),
     Nil,
@@ -203,6 +228,10 @@ enum Expression {
     BinaryOperation(BinaryOperation),
     UnaryOperation(UnaryOperation),
     Range(Range),
+    Require(Require),
+    Alias(Alias),
+    Import(Import),
+    Use(Use),
     // TODO: support guards before start working on case
     // TODO: case
     // TODO: cond
@@ -253,15 +282,66 @@ fn get_tree(code: &str) -> Tree {
 }
 
 fn main() {
-    println!("Please type something, or x to escape:");
-    let mut code = String::new();
+    let args: Vec<String> = env::args().collect();
 
-    while code != "x" {
-        code.clear();
-        io::stdin().read_line(&mut code).unwrap();
-        let result = parse(&code);
-        dbg!(result);
+    use std::time::Instant;
+    let now = Instant::now();
+
+    {
+        walkdir(&args[1]);
     }
+
+    let elapsed = now.elapsed();
+    println!("Elapsed: {:.2?}", elapsed);
+
+    let code = r#""#;
+    let result = parse(&code);
+    dbg!(&result);
+
+    // println!("Please type something, or x to escape:");
+    // let mut code = String::new();
+
+    // while code != "x" {
+    //     code.clear();
+    //     io::stdin().read_line(&mut code).unwrap();
+    //     let result = parse(&code);
+    //     dbg!(result);
+    // }
+}
+
+fn walkdir(path: &str) {
+    let mut file_paths = Vec::new();
+
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            let path = entry.path();
+            if let Some(extension) = path.extension().and_then(OsStr::to_str) {
+                match extension {
+                    "ex" => file_paths.push(path.to_owned()),
+                    _ => (),
+                }
+            }
+        }
+    }
+
+    use rayon::prelude::*;
+    let results = file_paths
+        .par_iter()
+        .map(|path| parse_file(path))
+        .collect::<Vec<_>>();
+
+    // TODO: actually fail in case we can't parse anything so we can better track errors when
+    // parsing these files, currently they are all returning an empty block when failing to parse a
+    // block due to how parse_do_block works
+    let total_successes = results.iter().filter(|e| e.is_ok()).count();
+    let total_failures = results.iter().filter(|e| e.is_err()).count();
+
+    println!("finished indexing: errors: #{total_failures} successes: #{total_successes}")
+}
+
+fn parse_file(file_path: &Path) -> Result<Expression, ParseError> {
+    let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
+    parse(&contents)
 }
 
 fn parse(code: &str) -> Result<Expression, ParseError> {
@@ -269,7 +349,7 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     let root_node = tree.root_node();
     let mut nodes = vec![];
     flatten_node_children(code, root_node, &mut nodes);
-    dbg!(&nodes);
+    // dbg!(&nodes);
     let tokens = nodes.clone();
 
     if tokens.len() == 0 {
@@ -302,7 +382,7 @@ fn try_parse_module(
     let (_, offset) = try_parse_keyword(&code, tokens, offset, "defmodule")?;
 
     let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
-    let (module_name, offset) = try_parse_alias(code, tokens, offset)?;
+    let (module_name, offset) = try_parse_module_name(code, tokens, offset)?;
 
     let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
 
@@ -531,10 +611,7 @@ fn try_parse_call(
 
     let (arguments, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
         Ok((expressions, new_offset)) => (expressions, new_offset),
-        Err(err) => {
-            dbg!(err);
-            (vec![], offset)
-        }
+        Err(_) => (vec![], offset),
     };
 
     let offset = if has_parenthesis {
@@ -627,7 +704,8 @@ fn try_parse_keyword_pair(
             let atom_text = extract_node_text(&code, atom_node);
             // transform atom string from `atom: ` into `atom`
             let clean_atom = atom_text
-                .replace(" ", "")
+                .split_whitespace()
+                .collect::<String>()
                 .strip_suffix(":")
                 .unwrap()
                 .to_string();
@@ -738,7 +816,7 @@ fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
     let (_, offset) = try_parse_grammar_name(tokens, offset, "map")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "struct")?;
-    let (struct_name, offset) = try_parse_alias(code, tokens, offset)?;
+    let (struct_name, offset) = try_parse_module_name(code, tokens, offset)?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "{")?;
 
     // TODO: why is this the only case with a very weird and different grammar_name than what's
@@ -779,8 +857,6 @@ fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<E
     let (keyword, offset) = try_parse_keyword_expressions(code, tokens, offset)
         .and_then(|(keyword, offset)| Ok((Some(Expression::KeywordList(keyword)), offset)))
         .unwrap_or_else(|_| (None, offset));
-
-    dbg!(&keyword);
 
     let (_, offset) = try_parse_grammar_name(tokens, offset, "]")?;
     let expressions = expressions
@@ -942,7 +1018,7 @@ fn try_parse_either_grammar_name<'a>(
 /// Grammar_name = alias means module names in the TS elixir grammar.
 /// e.g: ThisIsAnAlias, Elixir.ThisIsAlsoAnAlias
 /// as these are also technically atoms, we return them as atoms
-fn try_parse_alias(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Atom> {
+fn try_parse_module_name(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Atom> {
     let (atom_node, offset) = try_parse_grammar_name(tokens, offset, "alias")?;
     let atom_string = extract_node_text(code, atom_node);
     Ok((Atom(atom_string), offset))
@@ -956,10 +1032,14 @@ fn try_parse_expression<'a>(
     try_parse_module(code, tokens, offset)
         .or_else(|_| try_parse_function_definition(code, tokens, offset))
         .or_else(|_| try_parse_if_expression(code, tokens, offset))
+        .or_else(|_| try_parse_alias(code, tokens, offset))
+        .or_else(|_| try_parse_require(code, tokens, offset))
+        .or_else(|_| try_parse_use(code, tokens, offset))
+        .or_else(|_| try_parse_import(code, tokens, offset))
         .or_else(|_| try_parse_call(code, tokens, offset))
         .or_else(|_| try_parse_do_block(code, tokens, offset))
         .or_else(|_| {
-            try_parse_alias(code, tokens, offset)
+            try_parse_module_name(code, tokens, offset)
                 .and_then(|(atom, offset)| Ok((Expression::Atom(atom), offset)))
         })
         .or_else(|_| {
@@ -1044,7 +1124,6 @@ fn try_parse_if_expression(
     let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, "if")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
-    dbg!(offset);
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
     // TODO: we need an abstraction to parse one block inside another
@@ -1070,6 +1149,75 @@ fn try_parse_if_expression(
     });
 
     Ok((if_expr, offset))
+}
+
+fn try_parse_require(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let ((required_module, options), offset) = try_parse_module_operator(code, tokens, offset, "require")?;
+
+    let require = Expression::Require(Require {
+        target: required_module,
+        options,
+    });
+
+    Ok((require, offset))
+}
+
+fn try_parse_alias(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let ((aliased_module, options), offset) = try_parse_module_operator(code, tokens, offset, "alias")?;
+
+    let require = Expression::Alias(Alias {
+        target: aliased_module,
+        options,
+    });
+
+    Ok((require, offset))
+}
+
+fn try_parse_use(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let ((used_module, options), offset) = try_parse_module_operator(code, tokens, offset, "use")?;
+
+    let require = Expression::Use(Use {
+        target: used_module,
+        options,
+    });
+
+    Ok((require, offset))
+}
+
+fn try_parse_import(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let ((imported_module, options), offset) = try_parse_module_operator(code, tokens, offset, "import")?;
+
+    let require = Expression::Import(Import {
+        target: imported_module,
+        options,
+    });
+
+    Ok((require, offset))
+}
+
+/// Module operator == import, use, require, alias
+fn try_parse_module_operator(code: &str, tokens: &Vec<Node>, offset: u64, target: &str) -> ParserResult<(Atom, Option<Keyword>)> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
+    let (_, offset) = try_parse_keyword(code, tokens, offset, target)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
+    let (target_module, offset) = try_parse_module_name(code, tokens, offset)?;
+
+    let (options, offset) =
+        // TODO: this only fails when the only content in the file is the require expression
+        // find a general fix to these bounds check
+        if offset == tokens.len() as u64 {
+            (None, offset)
+        } else {
+            match try_parse_grammar_name(tokens, offset, ",") {
+                Ok((_, offset)) => {
+                    let (options, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
+                    (Some(options), offset)
+                },
+                Err(_) => (None, offset)
+            }
+        };
+
+    Ok(((target_module, options), offset))
 }
 
 fn try_parse_else_block(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -2526,6 +2674,141 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_require_no_options() {
+        let code = r#"
+        require Logger
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Require(Require {
+            target: Atom("Logger".to_string()),
+            options: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_require_with_options() {
+        let code = r#"
+        require Logger, level: :info
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Require(Require {
+            target: Atom("Logger".to_string()),
+            options: Some(Keyword {
+                pairs: vec![(
+                    Expression::Atom(Atom("level".to_string())),
+                    Expression::Atom(Atom("info".to_string())),
+                )],
+            }),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_alias_no_options() {
+        let code = r#"
+        alias MyModule
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Alias(Alias {
+            target: Atom("MyModule".to_string()),
+            options: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_alias_with_options() {
+        let code = r#"
+        alias MyKeyword, as: Keyword
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Alias(Alias {
+            target: Atom("MyKeyword".to_string()),
+            options: Some(Keyword {
+                pairs: vec![(
+                    Expression::Atom(Atom("as".to_string())),
+                    Expression::Atom(Atom("Keyword".to_string())),
+                )],
+            }),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_use_no_options() {
+        let code = r#"
+        use MyModule
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Use(Use {
+            target: Atom("MyModule".to_string()),
+            options: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_use_with_options() {
+        let code = r#"
+        use MyModule, some: :options
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Use(Use {
+            target: Atom("MyModule".to_string()),
+            options: Some(Keyword {
+                pairs: vec![(
+                    Expression::Atom(Atom("some".to_string())),
+                    Expression::Atom(Atom("options".to_string())),
+                )],
+            }),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_import_no_options() {
+        let code = r#"
+        import String
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Import(Import {
+            target: Atom("String".to_string()),
+            options: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_import_with_options() {
+        let code = r#"
+        import String, only: [:split]
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Import(Import {
+            target: Atom("String".to_string()),
+            options: Some(Keyword {
+                pairs: vec![(
+                    Expression::Atom(Atom("only".to_string())),
+                    Expression::List(List {
+                        items: vec![Expression::Atom(Atom("split".to_string()))],
+                        cons: None,
+                    }),
+                )],
+            }),
+        })]);
 
         assert_eq!(result, target);
     }
