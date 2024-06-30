@@ -69,77 +69,84 @@ struct Call {
 type ParserResult<T> = Result<(T, u64), ParseError>;
 type Parser<'a, T> = fn(&'a str, &'a Vec<Node<'a>>, u64) -> ParserResult<T>;
 
-///  Operators that are parsed and can be overriden by libraries.
-///  &&&
-///  <<<
-///  >>>
-///  <<~
-///  ~>>
-///  <~
-///  ~>
-///  <~>
-///  +++
-///  ---
-#[derive(Debug, PartialEq, Eq)]
-struct CustomOperator {
-    operator: String,
-    left: Box<Expression>,
-    right: Box<Expression>,
-}
-
 /// Check https://hexdocs.pm/elixir/1.17.1/operators.html for more info
+///
+/// Since range can actually have 3 operands if taking the step into account, we don't treat
+/// it as a binary operator.
 #[derive(Debug, PartialEq, Eq)]
 enum BinaryOperator {
     /// +
-    Plus(Expression, Expression),
+    Plus,
     /// -
-    Minus(Expression, Expression),
+    Minus,
     /// /
-    Div(Expression, Expression),
+    Div,
     /// *
-    Star(Expression, Expression),
+    Star,
     /// ++
-    ListConcatenation(Expression, Expression),
+    ListConcatenation,
     /// --
-    ListSubtraction(Expression, Expression),
+    ListSubtraction,
     /// and
-    StrictAnd(Expression, Expression),
+    StrictAnd,
     /// &&
-    RelaxedAnd(Expression, Expression),
+    RelaxedAnd,
     /// or
-    StrictOr(Expression, Expression),
+    StrictOr,
     /// ||
-    RelaxedOr(Expression, Expression),
+    RelaxedOr,
     /// in
-    In(Expression, Expression),
+    In,
     /// not in
-    NotIn(Expression, Expression),
+    NotIn,
     /// <>
-    BinaryConcat(Expression, Expression),
+    BinaryConcat,
     /// |>
-    Pipe(Expression, Expression),
+    Pipe,
     /// =~
-    TextSearch(Expression, Expression),
+    TextSearch,
     /// ==
-    Equal(Expression, Expression),
-    /// Range
-    Range(Expression, Expression, Option<Expression>),
+    Equal,
     /// ===
-    StrictEqual(Expression, Expression),
+    StrictEqual,
     /// !=
-    NotEqual(Expression, Expression),
+    NotEqual,
     /// !==
-    StrictNotEqual(Expression, Expression),
+    StrictNotEqual,
     /// <
-    LessThan(Expression, Expression),
+    LessThan,
     /// >
-    GreaterThan(Expression, Expression),
+    GreaterThan,
     /// <=
-    LessThanOrEqual(Expression, Expression),
+    LessThanOrEqual,
     /// >=
-    GreaterThanOrEqual(Expression, Expression),
-    /// Custom operators allowed by the compiler
-    Custom(CustomOperator),
+    GreaterThanOrEqual,
+    ///  Operators that are parsed and can be overriden by libraries.
+    ///  &&&
+    ///  <<<
+    ///  >>>
+    ///  <<~
+    ///  ~>>
+    ///  <~
+    ///  ~>
+    ///  <~>
+    ///  +++
+    ///  ---
+    Custom(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Range {
+    start: Box<Expression>,
+    end: Box<Expression>,
+    step: Option<Box<Expression>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BinaryOperation {
+    operator: BinaryOperator,
+    left: Box<Expression>,
+    right: Box<Expression>,
 }
 
 /// Check https://hexdocs.pm/elixir/1.17.1/operators.html for more info
@@ -179,8 +186,9 @@ enum Expression {
     Module(Module),
     Attribute(Attribute),
     FunctionDef(Function),
-    BinaryOperation(Box<BinaryOperator>),
+    BinaryOperation(BinaryOperation),
     UnaryOperation(UnaryOperation),
+    Range(Range),
     // TODO: anonymous functions
     // TODO: function capture
     //
@@ -499,10 +507,6 @@ fn try_parse_keyword_expressions(
     try_parse_sep_by(code, tokens, offset, try_parse_keyword_pair, sep_parser)
         .and_then(|(pairs, offset)| Ok((Keyword { pairs }, offset)))
 }
-
-// fn try_parse_unary<'a, T>(code: &str, tokens: &Vec<Node>, offset: u64, operator_parser: Parser<'a, T>) -> ParserResult<Expression> {
-//     let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
-// }
 
 fn try_parse_sep_by<'a, T, S>(
     code: &'a str,
@@ -862,6 +866,8 @@ fn try_parse_expression<'a>(
                 .and_then(|(map, offset)| Ok((Expression::Map(map), offset)))
         })
         .or_else(|_| try_parse_unary_operator(code, tokens, offset))
+        .or_else(|_| try_parse_binary_operator(code, tokens, offset))
+        .or_else(|_| try_parse_range(code, tokens, offset))
         .or_else(|_| {
             try_parse_struct(code, tokens, offset)
                 .and_then(|(s, offset)| Ok((Expression::Struct(s), offset)))
@@ -899,6 +905,23 @@ fn try_parse_unary_operator(
     Ok((operation, offset))
 }
 
+fn try_parse_binary_operator(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+    let (left, offset) = try_parse_expression(code, tokens, offset)?;
+    let (operator, offset) = try_parse_binary_operator_node(tokens, offset)?;
+    let (right, offset) = try_parse_expression(code, tokens, offset)?;
+    let operation = Expression::BinaryOperation(BinaryOperation {
+        operator,
+        left: Box::new(left),
+        right: Box::new(right),
+    });
+    Ok((operation, offset))
+}
+
 fn try_parse_unary_operator_node(tokens: &Vec<Node>, offset: u64) -> ParserResult<UnaryOperator> {
     let token = tokens[offset as usize];
     let operator = token.grammar_name();
@@ -908,6 +931,79 @@ fn try_parse_unary_operator_node(tokens: &Vec<Node>, offset: u64) -> ParserResul
         "!" => Ok((UnaryOperator::RelaxedNot, offset + 1)),
         "not" => Ok((UnaryOperator::StrictNot, offset + 1)),
         _ => Err(build_unexpected_token_error("unary_operator", &token)),
+    }
+}
+
+fn try_parse_binary_operator_node(tokens: &Vec<Node>, offset: u64) -> ParserResult<BinaryOperator> {
+    let token = tokens[offset as usize];
+    let operator = token.grammar_name();
+    match operator {
+        "+" => Ok((BinaryOperator::Plus, offset + 1)),
+        "-" => Ok((BinaryOperator::Minus, offset + 1)),
+        "*" => Ok((BinaryOperator::Star, offset + 1)),
+        "/" => Ok((BinaryOperator::Div, offset + 1)),
+        "++" => Ok((BinaryOperator::ListConcatenation, offset + 1)),
+        "--" => Ok((BinaryOperator::ListSubtraction, offset + 1)),
+        "and" => Ok((BinaryOperator::StrictAnd, offset + 1)),
+        "&&" => Ok((BinaryOperator::RelaxedAnd, offset + 1)),
+        "or" => Ok((BinaryOperator::StrictOr, offset + 1)),
+        "||" => Ok((BinaryOperator::RelaxedOr, offset + 1)),
+        "in" => Ok((BinaryOperator::In, offset + 1)),
+        "not in" => Ok((BinaryOperator::NotIn, offset + 1)),
+        "<>" => Ok((BinaryOperator::BinaryConcat, offset + 1)),
+        "|>" => Ok((BinaryOperator::Pipe, offset + 1)),
+        "=~" => Ok((BinaryOperator::TextSearch, offset + 1)),
+        "==" => Ok((BinaryOperator::Equal, offset + 1)),
+        "===" => Ok((BinaryOperator::StrictEqual, offset + 1)),
+        "!=" => Ok((BinaryOperator::NotEqual, offset + 1)),
+        "!==" => Ok((BinaryOperator::StrictNotEqual, offset + 1)),
+        "<" => Ok((BinaryOperator::LessThan, offset + 1)),
+        ">" => Ok((BinaryOperator::GreaterThan, offset + 1)),
+        "<=" => Ok((BinaryOperator::LessThanOrEqual, offset + 1)),
+        ">=" => Ok((BinaryOperator::GreaterThanOrEqual, offset + 1)),
+        unknown_operator => try_parse_custom_operator(&token, unknown_operator)
+            .and_then(|op| Ok((BinaryOperator::Custom(op), offset + 1))),
+    }
+}
+
+fn try_parse_range(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+
+    let (offset, has_step) = match try_parse_grammar_name(tokens, offset, "binary_operator") {
+        Ok((_, offset)) => (offset, true),
+        Err(_) => (offset, false),
+    };
+
+    let (start, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "..")?;
+    let (end, offset) = try_parse_expression(code, tokens, offset)?;
+
+    let (step, offset) = if has_step {
+        let (_, offset) = try_parse_grammar_name(tokens, offset, "//")?;
+        let (step, offset) = try_parse_expression(code, tokens, offset)?;
+        (Some(Box::new(step)), offset)
+    } else {
+        (None, offset)
+    };
+
+    let range = Expression::Range(Range {
+        start: Box::new(start),
+        end: Box::new(end),
+        step,
+    });
+
+    Ok((range, offset))
+}
+
+fn try_parse_custom_operator(token: &Node, operator_string: &str) -> Result<String, ParseError> {
+    let custom_operators = vec![
+        "&&&", "<<<", ">>>", "<<~", "~>>", "<~", "~>", "<~>", "+++", "---",
+    ];
+
+    if custom_operators.contains(&operator_string) {
+        Ok(operator_string.to_string())
+    } else {
+        Err(build_unexpected_token_error("binary_operator", &token))
     }
 }
 
@@ -1052,6 +1148,7 @@ mod tests {
     }
 
     // TODO: test function call with keyword arguments
+    // TODO: parse anonymous function call: foo.()
 
     #[test]
     fn parse_local_call() {
@@ -1327,6 +1424,13 @@ mod tests {
             ],
         })]);
 
+        assert_eq!(result, target);
+
+        let code = "
+        def func a, b, c do
+        end
+        ";
+        let result = parse(&code).unwrap();
         assert_eq!(result, target);
     }
 
@@ -1727,5 +1831,337 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: test unary not
+    #[test]
+    fn parse_binary_plus() {
+        let code = "20 + 40";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Plus,
+            left: Box::new(Expression::Integer(20)),
+            right: Box::new(Expression::Integer(40)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_minus() {
+        let code = "100 - 50";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Minus,
+            left: Box::new(Expression::Integer(100)),
+            right: Box::new(Expression::Integer(50)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_star() {
+        let code = "8 * 8";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Star,
+            left: Box::new(Expression::Integer(8)),
+            right: Box::new(Expression::Integer(8)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_div() {
+        let code = "10 / 2";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Div,
+            left: Box::new(Expression::Integer(10)),
+            right: Box::new(Expression::Integer(2)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_list_concatenation() {
+        let code = "[1, 2, 3] ++ tail";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::ListConcatenation,
+            left: Box::new(Expression::List(List {
+                items: vec![
+                    Expression::Integer(1),
+                    Expression::Integer(2),
+                    Expression::Integer(3),
+                ],
+            })),
+            right: Box::new(Expression::Identifier(Identifier("tail".to_string()))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_list_subtraction() {
+        let code = "cache -- [1, 2, 3]";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::ListSubtraction,
+            left: Box::new(Expression::Identifier(Identifier("cache".to_string()))),
+            right: Box::new(Expression::List(List {
+                items: vec![
+                    Expression::Integer(1),
+                    Expression::Integer(2),
+                    Expression::Integer(3),
+                ],
+            })),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_strict_and() {
+        let code = "true and false";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::StrictAnd,
+            left: Box::new(Expression::Bool(true)),
+            right: Box::new(Expression::Bool(false)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_relaxed_and() {
+        let code = ":atom && false";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::RelaxedAnd,
+            left: Box::new(Expression::Atom(Atom("atom".to_string()))),
+            right: Box::new(Expression::Bool(false)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_strict_or() {
+        let code = "false or true";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::StrictOr,
+            left: Box::new(Expression::Bool(false)),
+            right: Box::new(Expression::Bool(true)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_relaxed_or() {
+        let code = "a || b";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::RelaxedOr,
+            left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+            right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_in() {
+        let code = "1 in [1, 2, 3]";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::In,
+            left: Box::new(Expression::Integer(1)),
+            right: Box::new(Expression::List(List {
+                items: vec![
+                    Expression::Integer(1),
+                    Expression::Integer(2),
+                    Expression::Integer(3),
+                ],
+            })),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_not_in() {
+        let code = "1 not in [1, 2, 3]";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::NotIn,
+            left: Box::new(Expression::Integer(1)),
+            right: Box::new(Expression::List(List {
+                items: vec![
+                    Expression::Integer(1),
+                    Expression::Integer(2),
+                    Expression::Integer(3),
+                ],
+            })),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_concat() {
+        let code = r#""hello" <> "world""#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::BinaryConcat,
+            left: Box::new(Expression::String("hello".to_string())),
+            right: Box::new(Expression::String("world".to_string())),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_pipe() {
+        let code = "value |> function()";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Pipe,
+            left: Box::new(Expression::Identifier(Identifier("value".to_string()))),
+            right: Box::new(Expression::Call(Call {
+                target: Identifier("function".to_string()),
+                remote_callee: None,
+                arguments: vec![],
+            })),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_equal() {
+        let code = "10 == 10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::Equal,
+            left: Box::new(Expression::Integer(10)),
+            right: Box::new(Expression::Integer(10)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_strict_equal() {
+        let code = "10.0 === 10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::StrictEqual,
+            left: Box::new(Expression::Float(Float(10.0))),
+            right: Box::new(Expression::Integer(10)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_less_than() {
+        let code = "9 < 10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::LessThan,
+            left: Box::new(Expression::Integer(9)),
+            right: Box::new(Expression::Integer(10)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_less_than_or_equal() {
+        let code = "9 <= 10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::LessThanOrEqual,
+            left: Box::new(Expression::Integer(9)),
+            right: Box::new(Expression::Integer(10)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_greater_than() {
+        let code = "10 > 5";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::GreaterThan,
+            left: Box::new(Expression::Integer(10)),
+            right: Box::new(Expression::Integer(5)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_greater_than_or_equal() {
+        let code = "2 >= 2";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+            operator: BinaryOperator::GreaterThanOrEqual,
+            left: Box::new(Expression::Integer(2)),
+            right: Box::new(Expression::Integer(2)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_custom_binary_operator() {
+        let custom_operators = vec![
+            "&&&", "<<<", ">>>", "<<~", "~>>", "<~", "~>", "<~>", "+++", "---",
+        ];
+
+        for operator in custom_operators {
+            let code = format!("2 {} 2", operator);
+            let result = parse(&code).unwrap();
+
+            let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Custom(operator.to_string()),
+                left: Box::new(Expression::Integer(2)),
+                right: Box::new(Expression::Integer(2)),
+            })]);
+
+            assert_eq!(result, target);
+        }
+    }
+
+    #[test]
+    fn parse_simple_range() {
+        let code = "0..10";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Range(Range {
+            start: Box::new(Expression::Integer(0)),
+            end: Box::new(Expression::Integer(10)),
+            step: None
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_range_with_step() {
+        let code = "0..10//2";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Range(Range {
+            start: Box::new(Expression::Integer(0)),
+            end: Box::new(Expression::Integer(10)),
+            step: Some(Box::new(Expression::Integer(2)))
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
