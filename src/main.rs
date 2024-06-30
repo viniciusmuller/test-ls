@@ -1,4 +1,5 @@
 use core::fmt;
+use std::io;
 
 use tree_sitter::{Node, Tree};
 
@@ -82,7 +83,7 @@ enum BinaryOperator {
     /// /
     Div,
     /// *
-    Star,
+    Mult,
     /// ++
     ListConcatenation,
     /// --
@@ -233,11 +234,15 @@ fn get_tree(code: &str) -> Tree {
 }
 
 fn main() {
-    // %{a: 10, b: true, c: nil}
-    let code = r#""#;
+    println!("Please type something, or x to escape:");
+    let mut code = String::new();
 
-    let result = parse(&code);
-    dbg!(result);
+    while code != "x" {
+        code.clear();
+        io::stdin().read_line(&mut code).unwrap();
+        let result = parse(&code);
+        dbg!(result);
+    }
 }
 
 fn parse(code: &str) -> Result<Expression, ParseError> {
@@ -449,8 +454,8 @@ fn try_parse_call(
     };
 
     let offset = if remote_callee.is_none() && has_dot {
-        let (token, new_offset) = try_parse_grammar_name(tokens, offset, "identifier")?;
-        remote_callee = Some(Identifier(extract_node_text(code, token)));
+        let (identifier, new_offset) = try_parse_identifier(code, tokens, offset)?;
+        remote_callee = Some(identifier);
         new_offset
     } else {
         offset
@@ -467,7 +472,10 @@ fn try_parse_call(
 
     let (arguments, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
         Ok((expressions, new_offset)) => (expressions, new_offset),
-        Err(_) => (vec![], offset),
+        Err(err) => {
+            dbg!(err);
+            (vec![], offset)
+        },
     };
 
     let offset = if has_parenthesis {
@@ -578,11 +586,9 @@ fn try_parse_keyword_pair(
 fn try_parse_quoted_keyword(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Atom> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "quoted_keyword")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
-    // TODO: create function to parse quoted_content
-    let (atom_node, offset) = try_parse_grammar_name(tokens, offset, "quoted_content")?;
-    let atom_string = extract_node_text(code, atom_node);
+    let (quoted_content, offset) = try_parse_quoted_content(code, tokens, offset)?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
-    Ok((Atom(atom_string), offset))
+    Ok((Atom(quoted_content), offset))
 }
 
 fn try_parse_do_block<'a>(
@@ -608,10 +614,9 @@ fn try_parse_quoted_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserR
     let (_, offset) = try_parse_grammar_name(tokens, offset, "quoted_atom")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, ":")?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
-    let (atom_node, offset) = try_parse_grammar_name(tokens, offset, "quoted_content")?;
-    let atom_string = extract_node_text(code, atom_node);
+    let (atom_content, offset) = try_parse_quoted_content(code, tokens, offset)?;
     let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
-    Ok((Expression::Atom(Atom(atom_string)), offset))
+    Ok((Expression::Atom(Atom(atom_content)), offset))
 }
 
 fn try_parse_bool(tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -803,10 +808,34 @@ fn try_parse_string(
     let (_, offset) = try_parse_grammar_name(tokens, offset, "string")?;
     let quotes = vec!["\"", "\"\"\""];
     let (_, offset) = try_parse_either_grammar_name(tokens, offset, &quotes)?;
-    let (string_node, offset) = try_parse_grammar_name(tokens, offset, "quoted_content")?;
-    let string_text = extract_node_text(code, string_node);
+    let (string_text, offset) = try_parse_quoted_content(code, tokens, offset)?;
     let (_, offset) = try_parse_either_grammar_name(tokens, offset, &quotes)?;
     Ok((string_text, offset))
+}
+
+/// Consumes everything from a quoted_content and returns it as a concatenated string.
+/// It concatenates escape sequences and interpolations into the string
+fn try_parse_quoted_content(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<String> {
+    parse_many(code, tokens, offset, |code, tokens, offset| {
+        let (string_node, offset) =
+            try_parse_grammar_name(tokens, offset, "quoted_content")
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "escape_sequence"))
+            .or_else(|_| try_parse_interpolation(code, tokens, offset))?;
+
+        let string_text = extract_node_text(code, string_node);
+        Ok((string_text, offset))
+    }).and_then(|(strings, offset)| Ok((strings.join(""), offset)))
+}
+
+// interpolations are discarded for now
+// TODO: do not discard interpolations
+fn try_parse_interpolation<'a>(code: &str, tokens: &Vec<Node<'a>>, offset: u64) -> ParserResult<Node<'a>> {
+    let (interpolation_node, offset) = try_parse_grammar_name(tokens, offset, "interpolation")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "#{")?;
+    let (_, offset) = try_parse_expression(code, tokens, offset)?;
+
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
+    Ok((interpolation_node, offset))
 }
 
 fn try_parse_either_grammar_name<'a>(
@@ -940,7 +969,7 @@ fn try_parse_binary_operator_node(tokens: &Vec<Node>, offset: u64) -> ParserResu
     match operator {
         "+" => Ok((BinaryOperator::Plus, offset + 1)),
         "-" => Ok((BinaryOperator::Minus, offset + 1)),
-        "*" => Ok((BinaryOperator::Star, offset + 1)),
+        "*" => Ok((BinaryOperator::Mult, offset + 1)),
         "/" => Ok((BinaryOperator::Div, offset + 1)),
         "++" => Ok((BinaryOperator::ListConcatenation, offset + 1)),
         "--" => Ok((BinaryOperator::ListSubtraction, offset + 1)),
@@ -1081,16 +1110,27 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: support interpolation in quoted atoms (and quoted_content structures overall)
-    // #[test]
-    // fn parse_atom_with_quotes_and_interpolation() {
-    //     let code = ":\"john #{name}\"";
-    //     let result = parse(&code).unwrap();
+    // TODO: parse charlists
 
-    //     let target = Block(vec![Expression::Atom(Atom("john ".to_string()))]);
+    #[test]
+    fn parse_quoted_atom_with_interpolation() {
+        let code = ":\"john #{name}\"";
+        let result = parse(&code).unwrap();
 
-    //     assert_eq!(result, target);
-    // }
+        let target = Block(vec![Expression::Atom(Atom("john #{name}".to_string()))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_quoted_atom_with_escape_sequence() {
+        let code = ":\"john\n\"";
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::Atom(Atom("john\n".to_string()))]);
+
+        assert_eq!(result, target);
+    }
 
     #[test]
     fn parse_alias() {
@@ -1240,8 +1280,35 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: parse integer in different bases
+    #[test]
+    fn parse_hex_integer() {
+        let code = "0x1F";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Integer(31)]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_binary_number() {
+        let code = "0b1010";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Integer(10)]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_octal_number() {
+        let code = "0o777";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Integer(511)]);
+
+        assert_eq!(result, target);
+    }
+
     // TODO: parse integer in scientific notation
+    // 1.0e-10
 
     #[test]
     fn parse_string() {
@@ -1253,16 +1320,25 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: support string interpolation inside of quoted_content
-    // #[test]
-    // fn parse_string_interpolation() {
-    //     let code = "\"this is #{string_value}!\"";
-    //     let result = parse(&code).unwrap();
+    #[test]
+    fn parse_string_escape_sequence() {
+        let code = "\"hello world!\n different\nlines\nhere\"";
+        let result = parse(&code).unwrap();
 
-    //     let target = Block(vec![Expression::String("\"string!\"".to_string())]);
+        let target = Block(vec![Expression::String("hello world!\n different\nlines\nhere".to_string())]);
 
-    //     assert_eq!(result, target);
-    // }
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_string_interpolation() {
+        let code = r#""this is #{string_value}!""#;
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::String("this is #{string_value}!".to_string())]);
+
+        assert_eq!(result, target);
+    }
 
     #[test]
     fn parse_multiline_string() {
@@ -1862,7 +1938,7 @@ mod tests {
         let code = "8 * 8";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Star,
+            operator: BinaryOperator::Mult,
             left: Box::new(Expression::Integer(8)),
             right: Box::new(Expression::Integer(8)),
         })]);
