@@ -185,6 +185,31 @@ struct IfExpression {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct CaseExpression {
+    target_expression: Box<Expression>,
+    arms: Vec<CaseArm>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CondExpression {
+    arms: Vec<CondArm>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CondArm {
+    condition: Box<Expression>,
+    body: Box<Expression>,
+}
+
+// TODO: try to generalize this "stab" AST structure
+#[derive(Debug, PartialEq, Eq)]
+struct CaseArm {
+    left: Box<Expression>,
+    right: Box<Expression>,
+    guard_expr: Option<Box<Expression>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct Require {
     target: Atom,
     options: Option<Keyword>,
@@ -237,6 +262,8 @@ enum Expression {
     // TODO: case
     // TODO: cond
     If(IfExpression),
+    Case(CaseExpression),
+    Cond(CondExpression),
     // TODO: unless
     // TODO: try catch
     // TODO: receive after
@@ -367,7 +394,7 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     let root_node = tree.root_node();
     let mut nodes = vec![];
     flatten_node_children(code, root_node, &mut nodes);
-    // dbg!(&nodes);
+    dbg!(&nodes);
     let tokens = nodes.clone();
 
     let (result, _) = parse_all_tokens(code, &tokens, 0, try_parse_expression)?;
@@ -435,7 +462,7 @@ fn try_parse_function_definition(
         try_parse_grammar_name(code, tokens, offset, "call")
     });
 
-    match try_parse_guard(code, tokens, offset) {
+    match try_parse_function_guard(code, tokens, offset) {
         Ok(((guard_expr, parameters, function_name), offset)) => {
             let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
 
@@ -472,7 +499,7 @@ fn try_parse_function_definition(
     Ok((function, offset))
 }
 
-fn try_parse_guard(
+fn try_parse_function_guard(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
@@ -760,6 +787,126 @@ fn try_parse_quoted_keyword(code: &str, tokens: &Vec<Node>, offset: u64) -> Pars
     let (quoted_content, offset) = try_parse_quoted_content(code, tokens, offset)?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "\"")?;
     Ok((Atom(quoted_content), offset))
+}
+
+fn try_parse_cond_expression(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_keyword(code, tokens, offset, "cond")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do")?;
+
+    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+
+    let (arms, offset) = parse_until(code, tokens, offset, try_parse_stab, end_parser).and_then(
+        |(arms, offset)| {
+            let arms = arms
+                .into_iter()
+                .map(|(left, right)| CondArm {
+                    condition: Box::new(left),
+                    body: Box::new(right),
+                })
+                .collect();
+
+            Ok((arms, offset))
+        },
+    )?;
+    let (_, offset) = end_parser(code, tokens, offset)?;
+
+    let case = CondExpression { arms };
+
+    Ok((Expression::Cond(case), offset))
+}
+
+fn try_parse_case_expression(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_keyword(code, tokens, offset, "case")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+
+    let (case_expression, offset) = try_parse_expression(code, tokens, offset)?;
+
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do")?;
+
+    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+    let (arms, offset) = parse_until(code, tokens, offset, try_parse_case_arm, end_parser)?;
+    let (_, offset) = end_parser(code, tokens, offset)?;
+
+    let case = CaseExpression {
+        target_expression: Box::new(case_expression),
+        arms,
+    };
+
+    Ok((Expression::Case(case), offset))
+}
+
+fn try_parse_stab(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<(Expression, Expression)> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "stab_clause")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (left, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "body")?;
+    let (right, offset) = try_parse_expression(code, tokens, offset)?;
+    Ok(((left, right), offset))
+}
+
+fn try_parse_case_arm(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<CaseArm> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "stab_clause")?;
+
+    match try_parse_case_arm_guard(code, tokens, offset) {
+        Ok(((left, right, guard), offset)) => {
+            let case_arm = CaseArm {
+                left: Box::new(left),
+                right: Box::new(right),
+                guard_expr: Some(Box::new(guard)),
+            };
+
+            return Ok((case_arm, offset));
+        }
+        Err(_) => {}
+    }
+
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (left, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "body")?;
+    let (right, offset) = try_parse_expression(code, tokens, offset)?;
+
+    let case_arm = CaseArm {
+        left: Box::new(left),
+        right: Box::new(right),
+        guard_expr: None,
+    };
+
+    Ok((case_arm, offset))
+}
+
+fn try_parse_case_arm_guard(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<(Expression, Expression, Expression)> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (left, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "when")?;
+    let (guard_expression, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "body")?;
+    let (right, offset) = try_parse_expression(code, tokens, offset)?;
+
+    Ok(((left, right, guard_expression), offset))
 }
 
 fn try_parse_do_block<'a>(
@@ -1114,6 +1261,8 @@ fn try_parse_expression<'a>(
     try_parse_module(code, tokens, offset)
         .or_else(|err| try_parse_function_definition(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_if_expression(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_case_expression(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_cond_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_alias(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_require(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_use(code, tokens, offset).map_err(|_| err))
@@ -1219,7 +1368,6 @@ fn try_parse_if_expression(
     let (_, offset) = try_parse_keyword(code, tokens, offset, "if")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
-    dbg!(&condition_expression);
 
     let ((do_block, else_block), offset) = try_parse_do_block(code, tokens, offset)?;
 
@@ -1307,27 +1455,6 @@ fn try_parse_module_operator(
         };
 
     Ok(((target_module, options), offset))
-}
-
-fn try_parse_else_block(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let start_parser = |code, tokens, offset| {
-        let (_, offset) = try_parse_grammar_name(code, tokens, offset, "else_block")?;
-        try_parse_grammar_name(code, tokens, offset, "else")
-    };
-
-    let block_parser = |code, tokens, offset| {
-        let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
-
-        parse_until(code, tokens, offset, try_parse_expression, end_parser)
-    };
-
-    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
-
-    let (expressions, offset) =
-        parse_between(code, tokens, offset, start_parser, block_parser, end_parser)?;
-    let expressions = expressions.unwrap_or_default();
-
-    Ok((Expression::Block(expressions), offset))
 }
 
 fn try_parse_unary_operator_node(
@@ -1627,6 +1754,18 @@ mod tests {
 
         let target = Block(vec![Expression::Identifier(Identifier(
             "my_variable_name".to_string(),
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_identifier_attribute() {
+        let code = "@my_module_attribute";
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::Identifier(Identifier(
+            "@my_module_attribute".to_string(),
         ))]);
 
         assert_eq!(result, target);
@@ -3018,6 +3157,129 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_case() {
+        let code = r#"
+        case a do
+            10 -> true
+            20 -> false
+            _else -> nil
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Expression::Block(vec![Expression::Case(CaseExpression {
+            target_expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+            arms: vec![
+                CaseArm {
+                    left: Box::new(Expression::Integer(10)),
+                    right: Box::new(Expression::Bool(true)),
+                    guard_expr: None,
+                },
+                CaseArm {
+                    left: Box::new(Expression::Integer(20)),
+                    right: Box::new(Expression::Bool(false)),
+                    guard_expr: None,
+                },
+                CaseArm {
+                    left: Box::new(Expression::Identifier(Identifier("_else".to_string()))),
+                    right: Box::new(Expression::Nil),
+                    guard_expr: None,
+                },
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_case_with_guards() {
+        let code = r#"
+        case a do
+            10 when true -> true
+            20 when 2 == 2 -> false
+            _else -> nil
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Expression::Block(vec![Expression::Case(CaseExpression {
+            target_expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+            arms: vec![
+                CaseArm {
+                    left: Box::new(Expression::Integer(10)),
+                    right: Box::new(Expression::Bool(true)),
+                    guard_expr: Some(Box::new(Expression::Bool(true))),
+                },
+                CaseArm {
+                    left: Box::new(Expression::Integer(20)),
+                    right: Box::new(Expression::Bool(false)),
+                    guard_expr: Some(Box::new(Expression::BinaryOperation(BinaryOperation {
+                        operator: BinaryOperator::Equal,
+                        left: Box::new(Expression::Integer(2)),
+                        right: Box::new(Expression::Integer(2)),
+                    }))),
+                },
+                CaseArm {
+                    left: Box::new(Expression::Identifier(Identifier("_else".to_string()))),
+                    right: Box::new(Expression::Nil),
+                    guard_expr: None,
+                },
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_cond() {
+        let code = r#"
+        cond do
+            10 > 20 -> true
+            20 < 10 -> true
+            5 == 5 -> 10
+            true -> false
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Cond(CondExpression {
+            arms: vec![
+                CondArm {
+                    condition: Box::new(Expression::BinaryOperation(BinaryOperation {
+                        operator: BinaryOperator::GreaterThan,
+                        left: Box::new(Expression::Integer(10)),
+                        right: Box::new(Expression::Integer(20)),
+                    })),
+                    body: Box::new(Expression::Bool(true)),
+                },
+                CondArm {
+                    condition: Box::new(Expression::BinaryOperation(BinaryOperation {
+                        operator: BinaryOperator::LessThan,
+                        left: Box::new(Expression::Integer(20)),
+                        right: Box::new(Expression::Integer(10)),
+                    })),
+                    body: Box::new(Expression::Bool(true)),
+                },
+                CondArm {
+                    condition: Box::new(Expression::BinaryOperation(BinaryOperation {
+                        operator: BinaryOperator::Equal,
+                        left: Box::new(Expression::Integer(5)),
+                        right: Box::new(Expression::Integer(5)),
+                    })),
+                    body: Box::new(Expression::Integer(10)),
+                },
+                CondArm {
+                    condition: Box::new(Expression::Bool(true)),
+                    body: Box::new(Expression::Bool(false)),
+                },
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+
+    // TODO: unless
+    // TODO: access syntax[10]
 }
 
 // TODO: (fn a -> a + 1 end).(10)
