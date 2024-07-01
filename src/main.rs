@@ -269,17 +269,17 @@ struct ParseError {
 
 #[derive(Debug, Clone)]
 enum ErrorType {
-    UnexpectedToken(String, String),
+    UnexpectedToken(String),
     UnexpectedKeyword(String),
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.error_type {
-            ErrorType::UnexpectedToken(expected, actual) => write!(
+            ErrorType::UnexpectedToken(token) => write!(
                 f,
-                "{}:{}:{} expected to find '{}' token, but instead got '{}'.",
-                self.file, self.start.line, self.start.column, expected, actual
+                "{}:{}:{} unexpected token '{}'.",
+                self.file, self.start.line, self.start.column, token
             ),
             ErrorType::UnexpectedKeyword(actual) => write!(
                 f,
@@ -301,20 +301,20 @@ fn get_tree(code: &str) -> Tree {
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // use std::time::Instant;
-    // let now = Instant::now();
+    use std::time::Instant;
+    let now = Instant::now();
 
-    // {
-    //     walkdir(&args[1]);
-    // }
+    {
+        walkdir(&args[1]);
+    }
 
-    // let elapsed = now.elapsed();
-    // println!("Elapsed: {:.2?}", elapsed);
+    let elapsed = now.elapsed();
+    println!("Elapsed: {:.2?}", elapsed);
 
-    let file_path = args[1].clone();
-    let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
-    let result = parse(&contents);
-    dbg!(&result);
+    // let file_path = args[1].clone();
+    // let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
+    // let result = parse(&contents);
+    // dbg!(&result);
 
     // println!("Please type something, or x to escape:");
     // let mut code = String::new();
@@ -370,7 +370,8 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     // dbg!(&nodes);
     let tokens = nodes.clone();
 
-    let (result, _) = parse_all_tokens(&code, &tokens, 0, try_parse_expression)?;
+    let (result, _) = parse_all_tokens(code, &tokens, 0, try_parse_expression)?;
+
     Ok(Expression::Block(result))
 }
 
@@ -393,12 +394,12 @@ fn try_parse_module(
     offset: u64,
 ) -> Result<(Expression, u64), ParseError> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
-    let (_, offset) = try_parse_keyword(&code, tokens, offset, "defmodule")?;
+    let (_, offset) = try_parse_keyword(code, tokens, offset, "defmodule")?;
 
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (module_name, offset) = try_parse_module_name(code, tokens, offset)?;
 
-    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+    let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
 
     let module = Expression::Module(Module {
         name: module_name,
@@ -426,16 +427,17 @@ fn try_parse_function_definition(
         (offset, is_private)
     };
 
-    let arg_consumer =
-        |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "arguments");
-    let offset = try_consume(code, tokens, offset, arg_consumer);
+    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
+        try_parse_grammar_name(code, tokens, offset, "arguments")
+    });
 
-    let call_consumer = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "call");
-    let offset = try_consume(code, tokens, offset, call_consumer);
+    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
+        try_parse_grammar_name(code, tokens, offset, "call")
+    });
 
     match try_parse_guard(code, tokens, offset) {
         Ok(((guard_expr, parameters, function_name), offset)) => {
-            let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+            let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
 
             let function = Expression::FunctionDef(Function {
                 name: function_name,
@@ -450,14 +452,14 @@ fn try_parse_function_definition(
         Err(_) => {}
     };
 
-    let (function_name, offset) = try_parse_identifier(&code, tokens, offset)?;
+    let (function_name, offset) = try_parse_identifier(code, tokens, offset)?;
 
     let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
         Ok(result) => result,
         Err(_) => (vec![], offset),
     };
 
-    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+    let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
 
     let function = Expression::FunctionDef(Function {
         name: function_name,
@@ -485,9 +487,7 @@ fn try_parse_guard(
     };
 
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "when")?;
-
-    let (guard_expression, offset) =
-        try_parse_expression(code, tokens, offset).and_then(|(expr, offset)| Ok((expr, offset)))?;
+    let (guard_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
     Ok(((guard_expression, parameters, function_name), offset))
 }
@@ -766,25 +766,41 @@ fn try_parse_do_block<'a>(
     code: &str,
     tokens: &Vec<Node<'a>>,
     offset: u64,
-) -> ParserResult<Expression> {
-    let start_parser = |code, tokens, offset| {
-        let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
-        try_parse_grammar_name(code, tokens, offset, "do")
+) -> ParserResult<(Expression, Option<Expression>)> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do")?;
+
+    // TODO: update block to account for "stab" as in the language AST
+    let block_body_parser = |code, tokens, offset| {
+        let end_parser = |code, tokens, offset| {
+            try_parse_grammar_name(code, tokens, offset, "end")
+                .or_else(|_| try_parse_grammar_name(code, tokens, offset, "else_block"))
+        };
+
+        let (body, offset) = parse_until(code, tokens, offset, try_parse_expression, end_parser)
+            .unwrap_or((vec![], offset));
+
+        // TODO: support any custom block here, not only elses
+        // make caller specify which block it's expecting to be available inside the do block
+        let (else_block, offset) = try_parse_grammar_name(code, tokens, offset, "else_block")
+            .and_then(|(_, offset)| {
+                let (_, offset) = try_parse_grammar_name(code, tokens, offset, "else")?;
+
+                let (else_block, offset) =
+                    parse_until(code, tokens, offset, try_parse_expression, end_parser)?;
+
+                Ok((Some(else_block), offset))
+            })
+            .unwrap_or((None, offset));
+
+        let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
+        Ok(((body, else_block), offset))
     };
 
-    let block_parser = |code, tokens, offset| {
-        let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+    let ((expressions, optional_block), offset) = block_body_parser(code, tokens, offset)?;
+    let optional_block = optional_block.and_then(|block| Some(Expression::Block(block)));
 
-        parse_until(code, tokens, offset, try_parse_expression, end_parser)
-    };
-
-    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
-    let (expressions, offset) =
-        parse_between(code, tokens, offset, start_parser, block_parser, end_parser)?;
-
-    let expressions = expressions.unwrap_or_default();
-
-    Ok((Expression::Block(expressions), offset))
+    Ok(((Expression::Block(expressions), optional_block), offset))
 }
 
 fn try_parse_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -986,8 +1002,17 @@ fn try_parse_integer(
     let integer_text = extract_node_text(code, &integer_node);
     let integer_text = integer_text.replace("_", "");
 
-    let int = integer_text.parse::<i128>().unwrap();
-    Ok((int, offset))
+    let result = if integer_text.starts_with("0b") {
+        i128::from_str_radix(&integer_text[2..], 2).unwrap()
+    } else if integer_text.starts_with("0x") {
+        i128::from_str_radix(&integer_text[2..], 16).unwrap()
+    } else if integer_text.starts_with("0o") {
+        i128::from_str_radix(&integer_text[2..], 8).unwrap()
+    } else {
+        integer_text.parse::<i128>().unwrap()
+    };
+
+    Ok((result, offset))
 }
 
 fn try_parse_float(
@@ -1087,7 +1112,6 @@ fn try_parse_expression<'a>(
     offset: u64,
 ) -> ParserResult<Expression> {
     try_parse_module(code, tokens, offset)
-        .or_else(|err| try_parse_do_block(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_function_definition(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_if_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_alias(code, tokens, offset).map_err(|_| err))
@@ -1144,6 +1168,10 @@ fn try_parse_expression<'a>(
                 .map_err(|_| err)
         })
         .or_else(|err| {
+            // FIXME: currently we are losing the most specific parsing error somewhere in the stack
+            // if you want to see the specific token that caused the error, uncomment the dbg below
+            // and look at the logs
+            // dbg!(&err);
             try_parse_float(code, tokens, offset)
                 .and_then(|(float, offset)| Ok((Expression::Float(float), offset)))
                 .map_err(|_| err)
@@ -1191,27 +1219,14 @@ fn try_parse_if_expression(
     let (_, offset) = try_parse_keyword(code, tokens, offset, "if")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
+    dbg!(&condition_expression);
 
-    // TODO: we need an abstraction to parse one block inside another
-    // like this:
-    //
-    // do
-    //
-    // else <second_block>
-    //
-    // end
-    //
-    // this will be useful for other things such as rescue, after and catch
-    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
-
-    let (else_block, offset) = try_parse_else_block(code, tokens, offset)
-        .and_then(|(else_expression, offset)| Ok((Some(Box::new(else_expression)), offset)))
-        .unwrap_or_else(|_| (None, offset));
+    let ((do_block, else_block), offset) = try_parse_do_block(code, tokens, offset)?;
 
     let if_expr = Expression::If(IfExpression {
         condition_expression: Box::new(condition_expression),
         do_expression: Box::new(do_block),
-        else_expression: else_block,
+        else_expression: else_block.and_then(|block| Some(Box::new(block))),
     });
 
     Ok((if_expr, offset))
@@ -1428,7 +1443,7 @@ fn try_parse_custom_operator(
 fn build_unexpected_token_error(
     code: &str,
     offset: u64,
-    expected: &str,
+    _expected: &str,
     actual_token: &Node,
 ) -> ParseError {
     let start = actual_token.start_position();
@@ -1446,7 +1461,7 @@ fn build_unexpected_token_error(
             line: end.row,
             column: end.column,
         },
-        error_type: ErrorType::UnexpectedToken(expected.to_string(), content.to_string()),
+        error_type: ErrorType::UnexpectedToken(actual_token.grammar_name().to_string()),
     }
 }
 
@@ -1501,7 +1516,6 @@ fn parse_until<'a, T: Debug, E>(
     end_parser: Parser<'a, E>,
 ) -> ParserResult<Vec<T>> {
     let (expression, offset) = parser(code, tokens, offset)?;
-    dbg!(&expression);
     let mut expressions = vec![expression];
     let mut offset_mut = offset;
 
@@ -2857,7 +2871,15 @@ mod tests {
         end
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![]);
+        let target = Block(vec![Expression::If(IfExpression {
+            condition_expression: Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::GreaterThan,
+                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                right: Box::new(Expression::Integer(5)),
+            })),
+            do_expression: Box::new(Expression::Block(vec![Expression::Integer(10)])),
+            else_expression: Some(Box::new(Expression::Block(vec![Expression::Integer(20)]))),
+        })]);
 
         assert_eq!(result, target);
     }
