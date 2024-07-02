@@ -419,7 +419,7 @@ fn walkdir(path: &str) {
             let path = entry.path();
             if let Some(extension) = path.extension().and_then(OsStr::to_str) {
                 match extension {
-                    "ex" => file_paths.push(path.to_owned()),
+                    "ex" | "exs" => file_paths.push(path.to_owned()),
                     _ => (),
                 }
             }
@@ -4705,14 +4705,14 @@ mod tests {
     #[test]
     fn parse_macro_default_parameters() {
         let code = r#"
-        defmacro macro(a \\ 10) do
+        defmacrop macro(a \\ 10) do
             10
         end
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::MacroDef(Macro {
             name: Identifier("macro".to_string()),
-            is_private: false,
+            is_private: true,
             parameters: vec![Parameter {
                 expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
                 default: Some(Box::new(Expression::Integer(10))),
