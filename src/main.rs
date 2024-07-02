@@ -329,10 +329,6 @@ enum Expression {
     Grouping(Box<Expression>),
     // TODO: try catch
     // TODO: receive after
-    //
-    // TODO: anonymous functions
-    //
-    // TODO: double check whether quote accepts compiler metadata like `quote [keep: true] do`
     Quote(Quote),
     MacroDef(Macro),
     Call(Call),
