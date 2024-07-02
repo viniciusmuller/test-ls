@@ -486,6 +486,44 @@ fn try_parse_module(
     Ok((module, offset))
 }
 
+fn try_parse_capture_expression_variable(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Identifier> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "&")?;
+    let (node, offset) = try_parse_grammar_name(code, tokens, offset, "integer")?;
+    let content = extract_node_text(code, &node);
+    Ok((Identifier(format!("&{}", content)), offset))
+}
+
+fn try_parse_capture_expression(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "&")?;
+
+    let (offset, has_parenthesis) = match try_parse_grammar_name(code, tokens, offset, "(") {
+        Ok((_node, new_offset)) => (new_offset, true),
+        Err(_) => (offset, false),
+    };
+
+    let (body, offset) = try_parse_expression(code, tokens, offset)?;
+
+    let offset = if has_parenthesis {
+        let (_, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
+        new_offset
+    } else {
+        offset
+    };
+
+    let capture = Expression::CaptureExpression(Box::new(body));
+    Ok((capture, offset))
+}
+
 fn try_parse_remote_function_capture(
     code: &str,
     tokens: &Vec<Node>,
@@ -1514,6 +1552,7 @@ fn try_parse_expression<'a>(
     offset: u64,
 ) -> ParserResult<Expression> {
     try_parse_module(code, tokens, offset)
+        .or_else(|err| try_parse_grouping(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_call(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_dot_access(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_function_definition(code, tokens, offset).map_err(|_| err))
@@ -1525,6 +1564,12 @@ fn try_parse_expression<'a>(
         .or_else(|err| try_parse_lambda(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_function_capture(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_local_function_capture(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| {
+            try_parse_capture_expression_variable(code, tokens, offset)
+                .map(|(var, offset)| (Expression::Identifier(var), offset))
+                .map_err(|_| err)
+        })
+        .or_else(|err| try_parse_capture_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_alias(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_require(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_use(code, tokens, offset).map_err(|_| err))
@@ -1545,7 +1590,6 @@ fn try_parse_expression<'a>(
         .or_else(|err| try_parse_atom(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_quoted_atom(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_list(code, tokens, offset).map_err(|_| err))
-        .or_else(|err| try_parse_grouping(code, tokens, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_tuple(code, tokens, offset)
                 .and_then(|(tuple, offset)| Ok((Expression::Tuple(tuple), offset)))
@@ -3784,13 +3828,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_capture_expression() {
-        let code = "&(&1 + 2)";
+    fn parse_capture_expression_grouped() {
+        let code = "&(&1 * &2)";
         let result = parse(&code).unwrap();
-        let target = Expression::Block(vec![Expression::Access(Access {
-            target: Box::new(Expression::Identifier(Identifier("my_cache".to_string()))),
-            access_expression: Box::new(Expression::Atom(Atom("key".to_string()))),
-        })]);
+        let target = Block(vec![Expression::CaptureExpression(Box::new(
+            Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Mult,
+                left: Box::new(Expression::Identifier(Identifier("&1".to_string()))),
+                right: Box::new(Expression::Identifier(Identifier("&2".to_string()))),
+            }),
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_capture_expression_ungrouped() {
+        let code = "& &1 + &2";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::CaptureExpression(Box::new(
+            Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Identifier(Identifier("&1".to_string()))),
+                right: Box::new(Expression::Identifier(Identifier("&2".to_string()))),
+            }),
+        ))]);
 
         assert_eq!(result, target);
     }
@@ -4040,7 +4102,6 @@ mod tests {
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
 // TODO: support keyword in argument passing
-// TODO: support capture expressions
 // TODO: support `for` (tricky one)
 
 // TODO: (fn a -> a + 1 end).(10)
