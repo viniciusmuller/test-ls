@@ -222,6 +222,12 @@ struct Access {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct DotAccess {
+    body: Box<Expression>,
+    key: Identifier,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct Alias {
     target: Atom,
     options: Option<Keyword>,
@@ -240,12 +246,25 @@ struct Import {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum FunctionCaptureRemoteCallee {
+    Variable(Identifier),
+    Module(Atom),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct FunctionCapture {
+    arity: usize,
+    callee: Identifier,
+    remote_callee: Option<FunctionCaptureRemoteCallee>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum Expression {
     Bool(bool),
     Nil,
     String(String),
     Float(Float),
-    Integer(i128),
+    Integer(usize),
     Atom(Atom),
     Map(Map),
     Struct(Struct),
@@ -270,11 +289,13 @@ enum Expression {
     Case(CaseExpression),
     Cond(CondExpression),
     Access(Access),
+    DotAccess(DotAccess),
+    FunctionCapture(FunctionCapture),
+    CaptureExpression(Box<Expression>),
     // TODO: try catch
     // TODO: receive after
     //
     // TODO: anonymous functions
-    // TODO: function capture
     //
     // TODO: double check whether quote accepts compiler metadata like `quote [keep: true] do`
     // TODO: Quote(Block)
@@ -407,7 +428,10 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     let root_node = tree.root_node();
     let mut nodes = vec![];
     flatten_node_children(code, root_node, &mut nodes);
+
+    #[cfg(test)]
     dbg!(&nodes);
+
     let tokens = nodes.clone();
 
     let (result, _) = parse_all_tokens(code, &tokens, 0, try_parse_expression)?;
@@ -446,6 +470,58 @@ fn try_parse_module(
         body: Box::new(do_block),
     });
     Ok((module, offset))
+}
+
+fn try_parse_remote_function_capture(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "&")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "dot")?;
+    let (remote_callee, offset) = try_parse_module_name(code, tokens, offset)
+        .map(|(name, offset)| (FunctionCaptureRemoteCallee::Module(name), offset))
+        .or_else(|_| {
+            let (name, offset) = try_parse_identifier(code, tokens, offset)?;
+            Ok((FunctionCaptureRemoteCallee::Variable(name), offset))
+        })?;
+
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ".")?;
+    let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "/")?;
+    let (arity, offset) = try_parse_integer(code, tokens, offset)?;
+
+    let capture = Expression::FunctionCapture(FunctionCapture {
+        arity,
+        callee: local_callee,
+        remote_callee: Some(remote_callee),
+    });
+
+    Ok((capture, offset))
+}
+
+fn try_parse_local_function_capture(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "&")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "/")?;
+    let (arity, offset) = try_parse_integer(code, tokens, offset)?;
+
+    let capture = Expression::FunctionCapture(FunctionCapture {
+        arity,
+        callee: local_callee,
+        remote_callee: None,
+    });
+
+    Ok((capture, offset))
 }
 
 fn try_parse_function_definition(
@@ -499,7 +575,18 @@ fn try_parse_function_definition(
         Err(_) => (vec![], offset),
     };
 
-    let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+    let (is_keyword_form, offset) = try_parse_grammar_name(code, tokens, offset, ",")
+        .map(|(_, offset)| ((true, offset)))
+        .unwrap_or((false, offset));
+
+    let (do_block, offset) = if is_keyword_form {
+        let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
+        let first_pair = keywords.pairs.remove(0);
+        (first_pair.1, offset)
+    } else {
+        let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+        (do_block, offset)
+    };
 
     let function = Expression::FunctionDef(Function {
         name: function_name,
@@ -640,39 +727,52 @@ fn try_consume<'a, T>(
     }
 }
 
-fn try_parse_call(
+fn try_parse_remote_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "dot")?;
+    let (remote_callee, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ".")?;
+    let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
+    let (arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
+
+    let call = Expression::Call(Call {
+        target: Box::new(Expression::Identifier(local_callee)),
+        remote_callee: Some(Box::new(remote_callee)),
+        arguments,
+    });
+
+    Ok((call, offset))
+}
+
+fn try_parse_local_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
+    let (arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
+
+    let call = Expression::Call(Call {
+        target: Box::new(Expression::Identifier(local_callee)),
+        remote_callee: None,
+        arguments,
+    });
+
+    Ok((call, offset))
+}
+
+fn try_parse_call_arguments(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> Result<(Expression, u64), ParseError> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+) -> ParserResult<Vec<Expression>> {
+    if tokens.len() == offset as usize {
+        let node = tokens.last().unwrap();
 
-    // these are optional (present in remote calls, not present for local calls)
-    let (offset, has_dot) = try_parse_grammar_name(code, tokens, offset, "dot")
-        .and_then(|(_, offset)| Ok((offset, true)))
-        .unwrap_or((offset, false));
-
-    let (remote_callee, offset) = if has_dot {
-        try_parse_expression(code, tokens, offset)
-            .and_then(|(callee, offset)| {
-                let dot_parser =
-                    |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ".");
-                let offset = try_consume(code, tokens, offset, dot_parser);
-
-                Ok((Some(callee), offset))
-            })
-            .unwrap_or((None, offset))
-    } else {
-        (None, offset)
-    };
-
-    let (local_callee, offset) = if remote_callee.is_some() {
-        let (target, offset) = try_parse_identifier(code, tokens, offset)?;
-        (Expression::Identifier(target), offset)
-    } else {
-        let (target, offset) = try_parse_expression(code, tokens, offset)?;
-        (target, offset)
-    };
+        return Err(build_unexpected_token_error(
+            code,
+            offset,
+            "arguments",
+            &node,
+        ));
+    }
 
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
 
@@ -687,20 +787,13 @@ fn try_parse_call(
     };
 
     let offset = if has_parenthesis {
-        let (_node, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
+        let (_, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
         new_offset
     } else {
         offset
     };
 
-    Ok((
-        Expression::Call(Call {
-            target: Box::new(local_callee),
-            remote_callee: remote_callee.and_then(|e| Some(Box::new(e))),
-            arguments,
-        }),
-        offset,
-    ))
+    Ok((arguments, offset))
 }
 
 // TODO: use this to parse expressions sep by comma in the function body
@@ -1205,19 +1298,19 @@ fn try_parse_integer(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> Result<(i128, u64), ParseError> {
+) -> Result<(usize, u64), ParseError> {
     let (integer_node, offset) = try_parse_grammar_name(code, tokens, offset, "integer")?;
     let integer_text = extract_node_text(code, &integer_node);
     let integer_text = integer_text.replace("_", "");
 
     let result = if integer_text.starts_with("0b") {
-        i128::from_str_radix(&integer_text[2..], 2).unwrap()
+        usize::from_str_radix(&integer_text[2..], 2).unwrap()
     } else if integer_text.starts_with("0x") {
-        i128::from_str_radix(&integer_text[2..], 16).unwrap()
+        usize::from_str_radix(&integer_text[2..], 16).unwrap()
     } else if integer_text.starts_with("0o") {
-        i128::from_str_radix(&integer_text[2..], 8).unwrap()
+        usize::from_str_radix(&integer_text[2..], 8).unwrap()
     } else {
-        integer_text.parse::<i128>().unwrap()
+        integer_text.parse::<usize>().unwrap()
     };
 
     Ok((result, offset))
@@ -1320,17 +1413,21 @@ fn try_parse_expression<'a>(
     offset: u64,
 ) -> ParserResult<Expression> {
     try_parse_module(code, tokens, offset)
+        .or_else(|err| try_parse_remote_call(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_dot_access(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_function_definition(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_if_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_unless_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_case_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_cond_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_access_expression(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_remote_function_capture(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_local_function_capture(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_alias(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_require(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_use(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_import(code, tokens, offset).map_err(|_| err))
-        .or_else(|err| try_parse_call(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_local_call(code, tokens, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_module_name(code, tokens, offset)
                 .and_then(|(atom, offset)| Ok((Expression::Atom(atom), offset)))
@@ -1502,6 +1599,23 @@ fn try_parse_use(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Ex
     });
 
     Ok((require, offset))
+}
+
+fn try_parse_dot_access(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "dot")?;
+    let (body, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ".")?;
+    let (identifier, offset) = try_parse_identifier(code, tokens, offset)?;
+
+    let dot_access = Expression::DotAccess(DotAccess {
+        body: Box::new(body),
+        key: identifier,
+    });
+
+    dbg!(&dot_access);
+
+    Ok((dot_access, offset))
 }
 
 fn try_parse_import(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -2269,29 +2383,30 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: parse function guard expression in oneliner form
+    #[test]
+    fn parse_function_simple_keyword_definition() {
+        let code = "
+        def func(a, b, c), do: a + b
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("func".to_string()),
+            is_private: false,
+            body: Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+            })),
+            parameters: vec![
+                Identifier("a".to_string()),
+                Identifier("b".to_string()),
+                Identifier("c".to_string()),
+            ],
+            guard_expression: None,
+        })]);
 
-    // #[test]
-    // fn parse_function_oneliner() {
-    //     // TODO: before adding this one, add suport to parsing keyword lists
-    //     // Update try_parse_block to support do notation using keyword list
-    //     let code = "
-    //     # defmodule A, do: def a, do: 10
-    //     def func, do: priv_func()
-    //     ";
-    //     let result = parse(&code).unwrap();
-    //     let target = Block(vec![Expression::FunctionDef(Function {
-    //         name: Identifier("func".to_string()),
-    //         is_private: false,
-    //         block: Box::new(Block(vec![Expression::Call(Call {
-    //             target: Identifier("priv_func".to_string()),
-    //             remote_callee: None,
-    //             arguments: vec![],
-    //         })])),
-    //     })]);
-
-    //     assert_eq!(result, target);
-    // }
+        assert_eq!(result, target);
+    }
 
     // TODO: add @doc to function struct as a field to show in lsp hover
 
@@ -3535,8 +3650,95 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: handle parenthesis for grouping
+    #[test]
+    fn parse_capture_expression() {
+        let code = "&(&1 + 2)";
+        let result = parse(&code).unwrap();
+        let target = Expression::Block(vec![Expression::Access(Access {
+            target: Box::new(Expression::Identifier(Identifier("my_cache".to_string()))),
+            access_expression: Box::new(Expression::Atom(Atom("key".to_string()))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_capture_function_module() {
+        let code = "&Enum.map/1";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionCapture(FunctionCapture {
+            arity: 1,
+            callee: Identifier("map".to_string()),
+            remote_callee: Some(FunctionCaptureRemoteCallee::Module(Atom(
+                "Enum".to_string(),
+            ))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_capture_function_variable() {
+        let code = "&enum.map/1";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionCapture(FunctionCapture {
+            arity: 1,
+            callee: Identifier("map".to_string()),
+            remote_callee: Some(FunctionCaptureRemoteCallee::Variable(Identifier(
+                "enum".to_string(),
+            ))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_function_local_capture() {
+        let code = "&enum/1";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionCapture(FunctionCapture {
+            arity: 1,
+            callee: Identifier("enum".to_string()),
+            remote_callee: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_dot_access_variable() {
+        let code = "my_map.my_key";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::DotAccess(DotAccess {
+            body: Box::new(Expression::Identifier(Identifier("my_map".to_string()))),
+            key: Identifier("my_key".to_string()),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_dot_access_literal() {
+        let code = "%{a: 10}.a";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::DotAccess(DotAccess {
+            body: Box::new(Expression::Map(Map {
+                entries: vec![(
+                    Expression::Atom(Atom("a".to_string())),
+                    Expression::Integer(10),
+                )],
+            })),
+            key: Identifier("a".to_string()),
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
+
+// TODO: Target: currently parse lib/plausible_release.ex succesfully
+// TODO: parse parenthesis for grouping
+// TODO: parse anonymous function definition
+// TODO: support expressions in arguments (since these support pattern match as well)
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
