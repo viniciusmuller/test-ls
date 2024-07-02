@@ -71,6 +71,12 @@ struct Call {
     arguments: Vec<Expression>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct Quote {
+    options: Option<Keyword>,
+    body: Box<Expression>,
+}
+
 type ParserResult<T> = Result<(T, u64), ParseError>;
 type Parser<'a, T> = fn(&'a str, &'a Vec<Node<'a>>, u64) -> ParserResult<T>;
 
@@ -312,7 +318,7 @@ enum Expression {
     // TODO: anonymous functions
     //
     // TODO: double check whether quote accepts compiler metadata like `quote [keep: true] do`
-    // TODO: Quote(Block)
+    Quote(Quote),
     // TODO: MacroDef(Macro),
     Call(Call),
 }
@@ -576,6 +582,101 @@ fn try_parse_local_function_capture(
     Ok((capture, offset))
 }
 
+fn try_parse_quote(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    try_parse_quote_oneline(code, tokens, offset)
+        .or_else(|_| try_parse_quote_block(code, tokens, offset))
+}
+
+fn try_parse_quote_block(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_keyword(code, tokens, offset, "quote")?;
+
+    let arguments_p =
+        |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "arguments");
+    let offset = try_consume(code, tokens, offset, arguments_p);
+
+    let (options, offset) = try_parse_keyword_expressions(code, tokens, offset)
+        .or_else(|_| try_parse_keyword_list(code, tokens, offset))
+        .map(|(opts, offset)| (Some(opts), offset))
+        .unwrap_or((None, offset));
+
+    let ((block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+
+    let capture = Expression::Quote(Quote {
+        options,
+        body: Box::new(block),
+    });
+
+    Ok((capture, offset))
+}
+
+fn try_parse_quote_oneline(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (quote_node, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_keyword(code, tokens, offset, "quote")?;
+
+    let arguments_p =
+        |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "arguments");
+    let offset = try_consume(code, tokens, offset, arguments_p);
+
+    let (mut options, offset) = try_parse_keyword_expressions(code, tokens, offset)
+        .or_else(|_| try_parse_keyword_list(code, tokens, offset))?;
+
+    let (has_another_pair, offset) = try_parse_grammar_name(code, tokens, offset, ",")
+        .map(|(_, offset)| (true, offset))
+        .unwrap_or((false, offset));
+
+    let (block, offset) = if has_another_pair {
+        let (mut expr, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
+        try_extract_do_keyword(code, offset, expr.pairs.pop(), &quote_node)?
+    } else {
+        try_extract_do_keyword(code, offset, options.pairs.pop(), &quote_node)?
+    };
+
+    // If there was only one option and it was a `do:` keyword, there are no actual options
+    let options = if options.pairs.len() == 0 {
+        None
+    } else {
+        Some(options)
+    };
+
+    let quote = Expression::Quote(Quote {
+        options,
+        body: Box::new(block),
+    });
+
+    Ok((quote, offset))
+}
+
+fn try_extract_do_keyword(
+    code: &str,
+    offset: u64,
+    pair: Option<(Expression, Expression)>,
+    start_node: &Node,
+) -> ParserResult<Expression> {
+    match pair {
+        Some((Expression::Atom(atom), block)) => {
+            if atom == Atom("do".to_string()) {
+                Ok((block, offset))
+            } else {
+                return Err(build_unexpected_token_error(code, offset, "", start_node));
+            }
+        }
+        Some(_) | None => return Err(build_unexpected_token_error(code, offset, "", start_node)),
+    }
+}
+
+fn try_parse_keyword_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Keyword> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "list")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "[")?;
+    let (options, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "]")?;
+    Ok((options, offset))
+}
+
 fn try_parse_function_definition(
     code: &str,
     tokens: &Vec<Node>,
@@ -709,12 +810,7 @@ fn try_parse_grammar_name<'a>(
     if tokens.len() == offset as usize {
         let node = tokens.last().unwrap();
 
-        return Err(build_unexpected_token_error(
-            code,
-            offset,
-            "",
-            &node,
-        ));
+        return Err(build_unexpected_token_error(code, offset, "", &node));
     }
 
     let token = tokens[offset as usize];
@@ -1211,10 +1307,22 @@ fn try_parse_do_block<'a>(
         Ok(((body, else_block), offset))
     };
 
-    let ((expressions, optional_block), offset) = block_body_parser(code, tokens, offset)?;
-    let optional_block = optional_block.and_then(|block| Some(Expression::Block(block)));
+    let ((mut expressions, optional_block), offset) = block_body_parser(code, tokens, offset)?;
+    let optional_block = optional_block.map(|mut block| {
+        if block.len() == 1 {
+            block.pop().unwrap()
+        } else {
+            Expression::Block(block)
+        }
+    });
 
-    Ok(((Expression::Block(expressions), optional_block), offset))
+    let expression = if expressions.len() == 1 {
+        expressions.pop().unwrap()
+    } else {
+        Expression::Block(expressions)
+    };
+
+    Ok(((expression, optional_block), offset))
 }
 
 fn try_parse_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -1567,6 +1675,7 @@ fn try_parse_expression<'a>(
         .or_else(|err| try_parse_cond_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_access_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_lambda(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_quote(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_function_capture(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_local_function_capture(code, tokens, offset).map_err(|_| err))
         .or_else(|err| {
@@ -2473,7 +2582,6 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
 
-        // TODO: try to reduce boilerplate in assertions
         let target = Block(vec![Expression::Module(Module {
             name: Atom("Test.CustomModule".to_string()),
             body: Box::new(Block(vec![
@@ -2481,20 +2589,20 @@ mod tests {
                     name: Identifier("func".to_string()),
                     is_private: false,
                     parameters: vec![],
-                    body: Box::new(Block(vec![Expression::Call(Call {
+                    body: Box::new(Expression::Call(Call {
                         target: Box::new(Expression::Identifier(Identifier(
                             "priv_func".to_string(),
                         ))),
                         remote_callee: None,
                         arguments: vec![],
-                    })])),
+                    })),
                     guard_expression: None,
                 }),
                 Expression::FunctionDef(Function {
                     name: Identifier("priv_func".to_string()),
                     is_private: true,
                     parameters: vec![],
-                    body: Box::new(Block(vec![Expression::Integer(10)])),
+                    body: Box::new(Expression::Integer(10)),
                     guard_expression: None,
                 }),
             ])),
@@ -2517,11 +2625,11 @@ mod tests {
             name: Identifier("func".to_string()),
             is_private: false,
             parameters: vec![],
-            body: Box::new(Block(vec![Expression::Call(Call {
+            body: Box::new(Expression::Call(Call {
                 target: Box::new(Expression::Identifier(Identifier("priv_func".to_string()))),
                 remote_callee: None,
                 arguments: vec![],
-            })])),
+            })),
             guard_expression: None,
         })]);
 
@@ -2562,11 +2670,11 @@ mod tests {
             name: Identifier("guarded".to_string()),
             is_private: false,
             parameters: vec![Expression::Identifier(Identifier("a".to_string()))],
-            body: Box::new(Block(vec![Expression::BinaryOperation(BinaryOperation {
+            body: Box::new(Expression::BinaryOperation(BinaryOperation {
                 operator: BinaryOperator::Equal,
                 left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
                 right: Box::new(Expression::Integer(10)),
-            })])),
+            })),
             guard_expression: Some(Box::new(Expression::Call(Call {
                 target: Box::new(Expression::Identifier(Identifier("is_integer".to_string()))),
                 remote_callee: None,
@@ -2952,7 +3060,7 @@ mod tests {
                 Expression::FunctionDef(Function {
                     name: Identifier("func".to_string()),
                     is_private: false,
-                    body: Box::new(Expression::Block(vec![Expression::Integer(10)])),
+                    body: Box::new(Expression::Integer(10)),
                     parameters: vec![],
                     guard_expression: None,
                 }),
@@ -3456,9 +3564,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::If(ConditionalExpression {
             condition_expression: Box::new(Expression::Bool(false)),
-            do_expression: Box::new(Expression::Block(vec![Expression::Atom(Atom(
-                "ok".to_string(),
-            ))])),
+            do_expression: Box::new(Expression::Atom(Atom("ok".to_string()))),
             else_expression: None,
         })]);
 
@@ -3481,8 +3587,8 @@ mod tests {
                 left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
                 right: Box::new(Expression::Integer(5)),
             })),
-            do_expression: Box::new(Expression::Block(vec![Expression::Integer(10)])),
-            else_expression: Some(Box::new(Expression::Block(vec![Expression::Integer(20)]))),
+            do_expression: Box::new(Expression::Integer(10)),
+            else_expression: Some(Box::new(Expression::Integer(20))),
         })]);
 
         assert_eq!(result, target);
@@ -3846,9 +3952,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Expression::Block(vec![Expression::Unless(ConditionalExpression {
             condition_expression: Box::new(Expression::Bool(false)),
-            do_expression: Box::new(Expression::Block(vec![Expression::Atom(Atom(
-                "ok".to_string(),
-            ))])),
+            do_expression: Box::new(Expression::Atom(Atom("ok".to_string()))),
             else_expression: None,
         })]);
 
@@ -3867,14 +3971,8 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Expression::Block(vec![Expression::Unless(ConditionalExpression {
             condition_expression: Box::new(Expression::Bool(false)),
-            // TODO: we should not return a block structure when there's only a single entry in the
-            // block, return the expression directly
-            do_expression: Box::new(Expression::Block(vec![Expression::Atom(Atom(
-                "ok".to_string(),
-            ))])),
-            else_expression: Some(Box::new(Expression::Block(vec![Expression::Atom(Atom(
-                "not_ok".to_string(),
-            ))]))),
+            do_expression: Box::new(Expression::Atom(Atom("ok".to_string()))),
+            else_expression: Some(Box::new(Expression::Atom(Atom("not_ok".to_string())))),
         })]);
 
         assert_eq!(result, target);
@@ -4165,10 +4263,115 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_quote_block() {
+        let code = r#"
+        quote do
+            1 + 1
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Quote(Quote {
+            options: None,
+            body: Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Integer(1)),
+                right: Box::new(Expression::Integer(1)),
+            })),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_quote_block_options() {
+        let code = r#"
+        quote line: 10 do
+            1 + 1
+        end
+        "#;
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::Quote(Quote {
+            options: Some(Keyword {
+                pairs: vec![(
+                    Expression::Atom(Atom("line".to_string())),
+                    Expression::Integer(10),
+                )],
+            }),
+            body: Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Integer(1)),
+                right: Box::new(Expression::Integer(1)),
+            })),
+        })]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        quote [line: 10] do
+            1 + 1
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_quote_keyword_def() {
+        let code = r#"
+        quote do: 1 + 1
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Quote(Quote {
+            options: None,
+            body: Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Integer(1)),
+                right: Box::new(Expression::Integer(1)),
+            })),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_quote_keyword_def_options() {
+        let code = r#"
+        quote line: 10, file: nil, do: 1 + 1
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Quote(Quote {
+            options: Some(Keyword {
+                pairs: vec![
+                    (
+                        Expression::Atom(Atom("line".to_string())),
+                        Expression::Integer(10),
+                    ),
+                    (Expression::Atom(Atom("file".to_string())), Expression::Nil),
+                ],
+            }),
+            body: Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Integer(1)),
+                right: Box::new(Expression::Integer(1)),
+            })),
+        })]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        quote [line: 10, file: nil], do: 1 + 1
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
 // TODO: support `for` (tricky one)
+// TODO: defmacro
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
