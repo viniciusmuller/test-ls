@@ -26,6 +26,15 @@ struct Function {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct Macro {
+    name: Identifier,
+    is_private: bool,
+    body: Box<Expression>,
+    guard_expression: Option<Box<Expression>>,
+    parameters: Vec<Expression>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct Module {
     name: Atom,
     body: Box<Expression>,
@@ -319,7 +328,7 @@ enum Expression {
     //
     // TODO: double check whether quote accepts compiler metadata like `quote [keep: true] do`
     Quote(Quote),
-    // TODO: MacroDef(Macro),
+    MacroDef(Macro),
     Call(Call),
 }
 
@@ -651,7 +660,7 @@ fn try_parse_quote_oneline(
     Ok((quote, offset))
 }
 
-fn try_extract_do_keyword(
+fn try_extract_do_keyword<'a>(
     code: &str,
     offset: u64,
     pair: Option<(Expression, Expression)>,
@@ -706,7 +715,8 @@ fn try_parse_function_definition(
 
     match try_parse_function_guard(code, tokens, offset) {
         Ok(((guard_expr, parameters, function_name), offset)) => {
-            let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+            let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)
+                .or_else(|_| try_parse_do_keyword(code, tokens, offset))?;
 
             let function = Expression::FunctionDef(Function {
                 name: function_name,
@@ -752,13 +762,113 @@ fn try_parse_function_definition(
     Ok((function, offset))
 }
 
+fn try_parse_do_keyword(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<(Expression, Option<Expression>)> {
+    let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)
+        .or_else(|_| try_parse_keyword_list(code, tokens, offset))?;
+
+    let do_atom = Atom("do".to_string());
+
+    match keywords.pairs.pop() {
+        Some((Expression::Atom(atom), body)) => {
+            if atom == do_atom {
+                Ok(((body, None), offset))
+            } else {
+                todo!()
+            }
+        }
+        Some(_) | None => todo!(),
+    }
+}
+
+// TODO: generalize all of this function and macro definition code
+fn try_parse_macro_definition(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+
+    let (offset, is_private) = match try_parse_keyword(code, tokens, offset, "defmacrop") {
+        Ok((_, offset)) => (offset, true),
+        Err(_) => (offset, false),
+    };
+
+    let (offset, is_private) = if !is_private {
+        let (_, offset) = try_parse_keyword(code, tokens, offset, "defmacro")?;
+        (offset, false)
+    } else {
+        (offset, is_private)
+    };
+
+    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
+        try_parse_grammar_name(code, tokens, offset, "arguments")
+    });
+
+    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
+        try_parse_grammar_name(code, tokens, offset, "call")
+    });
+
+    match try_parse_function_guard(code, tokens, offset) {
+        Ok(((guard_expr, parameters, macro_name), offset)) => {
+            let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)
+                .or_else(|_| try_parse_do_keyword(code, tokens, offset))?;
+
+            let macro_def = Expression::MacroDef(Macro {
+                name: macro_name,
+                body: Box::new(do_block),
+                guard_expression: Some(Box::new(guard_expr)),
+                parameters,
+                is_private,
+            });
+
+
+            return Ok((macro_def, offset));
+        }
+        Err(_) => {}
+    };
+
+    let (macro_name, offset) = try_parse_identifier(code, tokens, offset)?;
+
+    let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
+        Ok(result) => result,
+        Err(_) => (vec![], offset),
+    };
+
+    let (is_keyword_form, offset) = try_parse_grammar_name(code, tokens, offset, ",")
+        .map(|(_, offset)| ((true, offset)))
+        .unwrap_or((false, offset));
+
+    let (do_block, offset) = if is_keyword_form {
+        let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
+        let first_pair = keywords.pairs.remove(0);
+        (first_pair.1, offset)
+    } else {
+        let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+        (do_block, offset)
+    };
+
+    let function = Expression::MacroDef(Macro {
+        name: macro_name,
+        body: Box::new(do_block),
+        guard_expression: None,
+        parameters,
+        is_private,
+    });
+
+    Ok((function, offset))
+}
+
 fn try_parse_function_guard(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<(Expression, Vec<Expression>, Identifier)> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) =  try_parse_grammar_name(code, tokens, offset, "call")?;
     let (function_name, offset) = try_parse_identifier(code, tokens, offset)?;
 
     let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
@@ -768,6 +878,9 @@ fn try_parse_function_guard(
 
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "when")?;
     let (guard_expression, offset) = try_parse_expression(code, tokens, offset)?;
+
+    let comma_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+    let offset = try_consume(code, tokens, offset, comma_parser);
 
     Ok(((guard_expression, parameters, function_name), offset))
 }
@@ -1272,6 +1385,7 @@ fn try_parse_case_arm_guard(
     Ok(((left, body, guard_expression), offset))
 }
 
+// TODO: generalize do keyword structures
 fn try_parse_do_block<'a>(
     code: &str,
     tokens: &Vec<Node<'a>>,
@@ -1669,6 +1783,7 @@ fn try_parse_expression<'a>(
         .or_else(|err| try_parse_remote_call(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_dot_access(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_function_definition(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_macro_definition(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_if_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_unless_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_case_expression(code, tokens, offset).map_err(|_| err))
@@ -2683,9 +2798,14 @@ mod tests {
         })]);
 
         assert_eq!(result, target);
-    }
 
-    // TODO: parse pattern matches in function heads
+        let code = "
+        def guarded(a) when is_integer(a), do: a == 10
+        ";
+
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
 
     #[test]
     fn parse_function_no_parameters_parenthesis() {
@@ -4367,11 +4487,128 @@ mod tests {
         let result = parse(&code).unwrap();
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_macro_simple_definition() {
+        let code = r#"
+        defmacro my_macro do
+
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::MacroDef(Macro {
+            name: Identifier("my_macro".to_string()),
+            is_private: false,
+            body: Box::new(Expression::Block(vec![])),
+            guard_expression: None,
+            parameters: vec![],
+        })]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        defmacro my_macro() do
+
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_macro_arguments_definition() {
+        let code = r#"
+        defmacro my_macro(a, b, c) do
+            a + b
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::MacroDef(Macro {
+            name: Identifier("my_macro".to_string()),
+            is_private: false,
+            body: Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+            })),
+            guard_expression: None,
+            parameters: vec![
+                Expression::Identifier(Identifier("a".to_string())),
+                Expression::Identifier(Identifier("b".to_string())),
+                Expression::Identifier(Identifier("c".to_string())),
+            ],
+        })]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        defmacro my_macro a, b, c do
+            a + b
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_macro_oneline() {
+        let code = r#"
+        defmacro my_macro(a, b, c), do: a + b
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::MacroDef(Macro {
+            name: Identifier("my_macro".to_string()),
+            is_private: false,
+            body: Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+            })),
+            guard_expression: None,
+            parameters: vec![
+                Expression::Identifier(Identifier("a".to_string())),
+                Expression::Identifier(Identifier("b".to_string())),
+                Expression::Identifier(Identifier("c".to_string())),
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_macro_guard() {
+        let target = Block(vec![Expression::MacroDef(Macro {
+            name: Identifier("my_macro".to_string()),
+            is_private: false,
+            body: Box::new(Expression::Bool(true)),
+            guard_expression: Some(Box::new(Expression::Call(Call {
+                target: Box::new(Expression::Identifier(Identifier("is_integer".to_string()))),
+                remote_callee: None,
+                arguments: vec![Expression::Identifier(Identifier("x".to_string()))],
+            }))),
+            parameters: vec![Expression::Identifier(Identifier("x".to_string()))],
+        })]);
+
+        let code = r#"
+        defmacro my_macro(x) when is_integer(x) do
+            true
+        end
+        "#;
+        let result = parse(&code).unwrap();
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        defmacro my_macro(x) when is_integer(x), do: true
+        "#;
+
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
 // TODO: support `for` (tricky one)
-// TODO: defmacro
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
