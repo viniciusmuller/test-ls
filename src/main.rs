@@ -937,7 +937,7 @@ fn try_parse_parameter_default_value(
 ) -> ParserResult<Parameter> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
     let (expression, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "//")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, r#"\\"#)?;
     let (default, offset) = try_parse_expression(code, tokens, offset)?;
 
     let parameter = Parameter {
@@ -2762,11 +2762,11 @@ mod tests {
 
     #[test]
     fn parse_function_default_parameters() {
-        let code = "
-        def func(a // 10) do
+        let code = r#"
+        def func(a \\ 10) do
             10
         end
-        ";
+        "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
             name: Identifier("func".to_string()),
@@ -2885,7 +2885,6 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: parse default value parameters (\\)
     #[test]
     fn parse_function_with_parameters() {
         let code = "
@@ -4705,11 +4704,11 @@ mod tests {
 
     #[test]
     fn parse_macro_default_parameters() {
-        let code = "
-        defmacro macro(a // 10) do
+        let code = r#"
+        defmacro macro(a \\ 10) do
             10
         end
-        ";
+        "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::MacroDef(Macro {
             name: Identifier("macro".to_string()),
@@ -4728,6 +4727,10 @@ mod tests {
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
 // TODO: support `for` (tricky one)
+// TODO: parse sigils
+
+// TODO: protocols (defprotocol, defimpl)
+// Even though these should be treated as normal expressions as per the new parser ideas
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
