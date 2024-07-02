@@ -17,12 +17,18 @@ impl Eq for Float {}
 struct Atom(String);
 
 #[derive(Debug, PartialEq, Eq)]
+struct Parameter {
+    expression: Box<Expression>,
+    default: Option<Box<Expression>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct Function {
     name: Identifier,
     is_private: bool,
     body: Box<Expression>,
     guard_expression: Option<Box<Expression>>,
-    parameters: Vec<Expression>,
+    parameters: Vec<Parameter>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -31,7 +37,7 @@ struct Macro {
     is_private: bool,
     body: Box<Expression>,
     guard_expression: Option<Box<Expression>>,
-    parameters: Vec<Expression>,
+    parameters: Vec<Parameter>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -430,14 +436,15 @@ fn walkdir(path: &str) {
         .map(|path| (path, parse_file(path)))
         .collect::<Vec<_>>();
 
-    // TODO: actually fail in case we can't parse anything so we can better track errors when
-    // parsing these files, currently they are all returning an empty block when failing to parse a
-    // block due to how parse_do_block works
     let successes = results.iter().filter(|(_path, e)| e.is_ok());
     let failures = results.iter().filter(|(_path, e)| e.is_err());
 
     for (path, _file) in successes.clone() {
         println!("succesfully parsed {:?}", path);
+    }
+
+    for (path, _file) in failures.clone() {
+        println!("failed to parsed {:?}", path);
     }
 
     println!(
@@ -825,7 +832,6 @@ fn try_parse_macro_definition(
                 is_private,
             });
 
-
             return Ok((macro_def, offset));
         }
         Err(_) => {}
@@ -866,9 +872,9 @@ fn try_parse_function_guard(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> ParserResult<(Expression, Vec<Expression>, Identifier)> {
+) -> ParserResult<(Expression, Vec<Parameter>, Identifier)> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
-    let (_, offset) =  try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
     let (function_name, offset) = try_parse_identifier(code, tokens, offset)?;
 
     let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
@@ -889,7 +895,7 @@ fn try_parse_parameters(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> ParserResult<Vec<Expression>> {
+) -> ParserResult<Vec<Parameter>> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
 
     let (offset, has_parenthesis) = match try_parse_grammar_name(code, tokens, offset, "(") {
@@ -899,7 +905,7 @@ fn try_parse_parameters(
 
     let sep_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
     let (parameters, offset) =
-        match try_parse_sep_by(code, tokens, offset, try_parse_expression, sep_parser) {
+        match try_parse_sep_by(code, tokens, offset, try_parse_parameter, sep_parser) {
             Ok((parameters, offset)) => (parameters, offset),
             Err(_) => (vec![], offset),
         };
@@ -912,6 +918,38 @@ fn try_parse_parameters(
     };
 
     Ok((parameters, offset))
+}
+
+fn try_parse_parameter(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Parameter> {
+    match try_parse_parameter_default_value(code, tokens, offset) {
+        Ok(result) => Ok(result),
+        Err(_) => try_parse_expression(code, tokens, offset).map(|(expr, offset)| {
+            let expr = Parameter {
+                expression: Box::new(expr),
+                default: None,
+            };
+
+            (expr, offset)
+        }),
+    }
+}
+
+fn try_parse_parameter_default_value(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<Parameter> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (expression, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "//")?;
+    let (default, offset) = try_parse_expression(code, tokens, offset)?;
+
+    let parameter = Parameter {
+        expression: Box::new(expression),
+        default: Some(Box::new(default)),
+    };
+
+    Ok((parameter, offset))
 }
 
 fn try_parse_grammar_name<'a>(
@@ -2726,7 +2764,27 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: parse functions with default values parameters (\\)
+    #[test]
+    fn parse_function_default_parameters() {
+        let code = "
+        def func(a // 10) do
+            10
+        end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("func".to_string()),
+            is_private: false,
+            parameters: vec![Parameter {
+                expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                default: Some(Box::new(Expression::Integer(10))),
+            }],
+            body: Box::new(Expression::Integer(10)),
+            guard_expression: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
 
     #[test]
     fn parse_function_definition() {
@@ -2760,12 +2818,15 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: Identifier("func".to_string()),
             is_private: false,
-            parameters: vec![Expression::Map(Map {
-                entries: vec![(
-                    Expression::Atom(Atom("a".to_string())),
-                    Expression::Identifier(Identifier("value".to_string())),
-                )],
-            })],
+            parameters: vec![Parameter {
+                expression: Box::new(Expression::Map(Map {
+                    entries: vec![(
+                        Expression::Atom(Atom("a".to_string())),
+                        Expression::Identifier(Identifier("value".to_string())),
+                    )],
+                })),
+                default: None,
+            }],
             body: Box::new(Expression::Identifier(Identifier("value".to_string()))),
             guard_expression: None,
         })]);
@@ -2784,7 +2845,10 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: Identifier("guarded".to_string()),
             is_private: false,
-            parameters: vec![Expression::Identifier(Identifier("a".to_string()))],
+            parameters: vec![Parameter {
+                expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                default: None,
+            }],
             body: Box::new(Expression::BinaryOperation(BinaryOperation {
                 operator: BinaryOperator::Equal,
                 left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
@@ -2838,9 +2902,18 @@ mod tests {
             is_private: false,
             body: Box::new(Block(vec![])),
             parameters: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Identifier(Identifier("b".to_string())),
-                Expression::Identifier(Identifier("c".to_string())),
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("c".to_string()))),
+                    default: None,
+                },
             ],
             guard_expression: None,
         })]);
@@ -2870,9 +2943,18 @@ mod tests {
                 right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
             })),
             parameters: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Identifier(Identifier("b".to_string())),
-                Expression::Identifier(Identifier("c".to_string())),
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("c".to_string()))),
+                    default: None,
+                },
             ],
             guard_expression: None,
         })]);
@@ -3973,7 +4055,6 @@ mod tests {
 
     #[test]
     fn parse_cond() {
-        // TODO: support case and cond with block on body
         let code = r#"
         cond do
             10 > 20 -> true
@@ -4021,7 +4102,6 @@ mod tests {
 
     #[test]
     fn parse_cond_with_block() {
-        // TODO: support case and cond with block on body
         let code = r#"
         cond do
             10 > 20 ->
@@ -4533,9 +4613,18 @@ mod tests {
             })),
             guard_expression: None,
             parameters: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Identifier(Identifier("b".to_string())),
-                Expression::Identifier(Identifier("c".to_string())),
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("c".to_string()))),
+                    default: None,
+                },
             ],
         })]);
 
@@ -4566,9 +4655,18 @@ mod tests {
             })),
             guard_expression: None,
             parameters: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Identifier(Identifier("b".to_string())),
-                Expression::Identifier(Identifier("c".to_string())),
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(Expression::Identifier(Identifier("c".to_string()))),
+                    default: None,
+                },
             ],
         })]);
 
@@ -4586,7 +4684,10 @@ mod tests {
                 remote_callee: None,
                 arguments: vec![Expression::Identifier(Identifier("x".to_string()))],
             }))),
-            parameters: vec![Expression::Identifier(Identifier("x".to_string()))],
+            parameters: vec![Parameter {
+                expression: Box::new(Expression::Identifier(Identifier("x".to_string()))),
+                default: None,
+            }],
         })]);
 
         let code = r#"
@@ -4603,6 +4704,28 @@ mod tests {
         "#;
 
         let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_macro_default_parameters() {
+        let code = "
+        defmacro macro(a // 10) do
+            10
+        end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::MacroDef(Macro {
+            name: Identifier("macro".to_string()),
+            is_private: false,
+            parameters: vec![Parameter {
+                expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                default: Some(Box::new(Expression::Integer(10))),
+            }],
+            body: Box::new(Expression::Integer(10)),
+            guard_expression: None,
+        })]);
+
         assert_eq!(result, target);
     }
 }
