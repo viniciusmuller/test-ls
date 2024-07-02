@@ -305,6 +305,7 @@ enum Expression {
     FunctionCapture(FunctionCapture),
     CaptureExpression(Box<Expression>),
     Lambda(Lambda),
+    Grouping(Box<Expression>),
     // TODO: try catch
     // TODO: receive after
     //
@@ -1272,6 +1273,15 @@ fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
     Ok((s, offset))
 }
 
+fn try_parse_grouping(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "block")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "(")?;
+    let (expression, offset) = try_parse_expression(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
+    let grouping = Expression::Grouping(Box::new(expression));
+    Ok((grouping, offset))
+}
+
 fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "list")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "[")?;
@@ -1420,6 +1430,13 @@ fn try_parse_string(
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "string")?;
     let quotes = vec!["\"", "\"\"\""];
     let (_, offset) = try_parse_either_grammar_name(code, tokens, offset, &quotes)?;
+
+    // empty string
+    match try_parse_either_grammar_name(code, tokens, offset, &quotes) {
+        Ok((_, offset)) => return Ok((String::new(), offset)),
+        Err(_) => {}
+    };
+
     let (string_text, offset) = try_parse_quoted_content(code, tokens, offset)?;
     let (_, offset) = try_parse_either_grammar_name(code, tokens, offset, &quotes)?;
     Ok((string_text, offset))
@@ -1528,6 +1545,7 @@ fn try_parse_expression<'a>(
         .or_else(|err| try_parse_atom(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_quoted_atom(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_list(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_grouping(code, tokens, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_tuple(code, tokens, offset)
                 .and_then(|(tuple, offset)| Ok((Expression::Tuple(tuple), offset)))
@@ -2233,6 +2251,16 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::String("string!".to_string())]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_empty_string() {
+        let code = r#""""#;
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::String("".to_string())]);
 
         assert_eq!(result, target);
     }
@@ -3974,12 +4002,46 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_grouping() {
+        let code = r#"
+        (1 + 1)
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Grouping(Box::new(
+            Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Integer(1)),
+                right: Box::new(Expression::Integer(1)),
+            }),
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_nested_grouping() {
+        let code = r#"
+        ((1 + 1))
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Grouping(Box::new(Expression::Grouping(
+            Box::new(Expression::BinaryOperation(BinaryOperation {
+                operator: BinaryOperator::Plus,
+                left: Box::new(Expression::Integer(1)),
+                right: Box::new(Expression::Integer(1)),
+            })),
+        )))]);
+
+        assert_eq!(result, target);
+    }
 }
 
-// TODO: support keyword in argument passing
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
-// TODO: parse parenthesis for grouping
-// TODO: support expressions in arguments (since these support pattern match as well)
+// TODO: support keyword in argument passing
+// TODO: support capture expressions
+// TODO: support `for` (tricky one)
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
