@@ -706,6 +706,17 @@ fn try_parse_grammar_name<'a>(
     offset: u64,
     expected: &str,
 ) -> ParserResult<Node<'a>> {
+    if tokens.len() == offset as usize {
+        let node = tokens.last().unwrap();
+
+        return Err(build_unexpected_token_error(
+            code,
+            offset,
+            "",
+            &node,
+        ));
+    }
+
     let token = tokens[offset as usize];
     let actual = token.grammar_name();
 
@@ -815,17 +826,6 @@ fn try_parse_call_arguments(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Vec<Expression>> {
-    if tokens.len() == offset as usize {
-        let node = tokens.last().unwrap();
-
-        return Err(build_unexpected_token_error(
-            code,
-            offset,
-            "arguments",
-            &node,
-        ));
-    }
-
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
 
     let (offset, has_parenthesis) = match try_parse_grammar_name(code, tokens, offset, "(") {
@@ -833,10 +833,14 @@ fn try_parse_call_arguments(
         Err(_) => (offset, false),
     };
 
-    let (arguments, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
+    let (mut base_arguments, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
         Ok((expressions, new_offset)) => (expressions, new_offset),
         Err(_) => (vec![], offset),
     };
+
+    let (keyword_arguments, offset) = try_parse_keyword_expressions(code, tokens, offset)
+        .map(|(keyword, offset)| (Some(Expression::KeywordList(keyword)), offset))
+        .unwrap_or((None, offset));
 
     let offset = if has_parenthesis {
         let (_, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
@@ -845,7 +849,8 @@ fn try_parse_call_arguments(
         offset
     };
 
-    Ok((arguments, offset))
+    base_arguments.extend(keyword_arguments);
+    Ok((base_arguments, offset))
 }
 
 // TODO: use this to parse expressions sep by comma in the function body
@@ -2192,6 +2197,68 @@ mod tests {
             target: Box::new(Expression::Identifier(Identifier("to_integer".to_string()))),
             remote_callee: None,
             arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_call_keyword_arguments_only() {
+        let code = "my_function(keywords: :only)";
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(Expression::Identifier(Identifier(
+                "my_function".to_string(),
+            ))),
+            remote_callee: None,
+            arguments: vec![Expression::KeywordList(Keyword {
+                pairs: vec![(
+                    Expression::Atom(Atom("keywords".to_string())),
+                    Expression::Atom(Atom("only".to_string())),
+                )],
+            })],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_call_keyword_arguments_no_parenthesis() {
+        let code = "IO.inspect label: :test";
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(Expression::Identifier(Identifier("inspect".to_string()))),
+            remote_callee: Some(Box::new(Expression::Atom(Atom("IO".to_string())))),
+            arguments: vec![Expression::KeywordList(Keyword {
+                pairs: vec![(
+                    Expression::Atom(Atom("label".to_string())),
+                    Expression::Atom(Atom("test".to_string())),
+                )],
+            })],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_call_keyword_arguments_positional_as_well() {
+        let code = "IO.inspect(my_struct, limit: :infinity)";
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(Expression::Identifier(Identifier("inspect".to_string()))),
+            remote_callee: Some(Box::new(Expression::Atom(Atom("IO".to_string())))),
+            arguments: vec![
+                Expression::Identifier(Identifier("my_struct".to_string())),
+                Expression::KeywordList(Keyword {
+                    pairs: vec![(
+                        Expression::Atom(Atom("limit".to_string())),
+                        Expression::Atom(Atom("infinity".to_string())),
+                    )],
+                }),
+            ],
         })]);
 
         assert_eq!(result, target);
@@ -4101,7 +4168,6 @@ mod tests {
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
-// TODO: support keyword in argument passing
 // TODO: support `for` (tricky one)
 
 // TODO: (fn a -> a + 1 end).(10)
