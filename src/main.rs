@@ -22,7 +22,7 @@ struct Function {
     is_private: bool,
     body: Box<Expression>,
     guard_expression: Option<Box<Expression>>,
-    parameters: Vec<Identifier>,
+    parameters: Vec<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -616,7 +616,7 @@ fn try_parse_function_guard(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> ParserResult<(Expression, Vec<Identifier>, Identifier)> {
+) -> ParserResult<(Expression, Vec<Expression>, Identifier)> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
     let (function_name, offset) = try_parse_identifier(code, tokens, offset)?;
@@ -636,7 +636,7 @@ fn try_parse_parameters(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> ParserResult<Vec<Identifier>> {
+) -> ParserResult<Vec<Expression>> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
 
     let (offset, has_parenthesis) = match try_parse_grammar_name(code, tokens, offset, "(") {
@@ -646,7 +646,7 @@ fn try_parse_parameters(
 
     let sep_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
     let (parameters, offset) =
-        match try_parse_sep_by(code, tokens, offset, try_parse_identifier, sep_parser) {
+        match try_parse_sep_by(code, tokens, offset, try_parse_expression, sep_parser) {
             Ok((parameters, offset)) => (parameters, offset),
             Err(_) => (vec![], offset),
         };
@@ -987,8 +987,6 @@ fn try_parse_lambda(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "anonymous_function")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "fn")?;
 
-    dbg!("heyyy");
-
     let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
 
     let lambda_clause_parser = |code, tokens, offset| {
@@ -998,7 +996,6 @@ fn try_parse_lambda(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
 
     let (clauses, offset) = parse_until(code, tokens, offset, lambda_clause_parser, end_parser)?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
-    dbg!(&clauses);
 
     let lambda = Lambda { clauses };
 
@@ -1701,8 +1698,6 @@ fn try_parse_dot_access(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserRe
         key: identifier,
     });
 
-    dbg!(&dot_access);
-
     Ok((dot_access, offset))
 }
 
@@ -2395,6 +2390,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_function_pattern_match() {
+        let code = "
+        def func(%{a: value}), do: value
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("func".to_string()),
+            is_private: false,
+            parameters: vec![Expression::Map(Map {
+                entries: vec![(
+                    Expression::Atom(Atom("a".to_string())),
+                    Expression::Identifier(Identifier("value".to_string())),
+                )],
+            })],
+            body: Box::new(Expression::Identifier(Identifier("value".to_string()))),
+            guard_expression: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_function_with_guard_expression() {
         let code = "
         def guarded(a) when is_integer(a) do
@@ -2405,7 +2422,7 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: Identifier("guarded".to_string()),
             is_private: false,
-            parameters: vec![Identifier("a".to_string())],
+            parameters: vec![Expression::Identifier(Identifier("a".to_string()))],
             body: Box::new(Block(vec![Expression::BinaryOperation(BinaryOperation {
                 operator: BinaryOperator::Equal,
                 left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
@@ -2454,9 +2471,9 @@ mod tests {
             is_private: false,
             body: Box::new(Block(vec![])),
             parameters: vec![
-                Identifier("a".to_string()),
-                Identifier("b".to_string()),
-                Identifier("c".to_string()),
+                Expression::Identifier(Identifier("a".to_string())),
+                Expression::Identifier(Identifier("b".to_string())),
+                Expression::Identifier(Identifier("c".to_string())),
             ],
             guard_expression: None,
         })]);
@@ -2486,9 +2503,9 @@ mod tests {
                 right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
             })),
             parameters: vec![
-                Identifier("a".to_string()),
-                Identifier("b".to_string()),
-                Identifier("c".to_string()),
+                Expression::Identifier(Identifier("a".to_string())),
+                Expression::Identifier(Identifier("b".to_string())),
+                Expression::Identifier(Identifier("c".to_string())),
             ],
             guard_expression: None,
         })]);
@@ -3959,6 +3976,7 @@ mod tests {
     }
 }
 
+// TODO: support keyword in argument passing
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
 // TODO: parse parenthesis for grouping
 // TODO: support expressions in arguments (since these support pattern match as well)
