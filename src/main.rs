@@ -259,6 +259,18 @@ struct FunctionCapture {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct LambdaClause {
+    arguments: Vec<Expression>,
+    guard: Option<Box<Expression>>,
+    body: Expression,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Lambda {
+    clauses: Vec<LambdaClause>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum Expression {
     Bool(bool),
     Nil,
@@ -292,6 +304,7 @@ enum Expression {
     DotAccess(DotAccess),
     FunctionCapture(FunctionCapture),
     CaptureExpression(Box<Expression>),
+    Lambda(Lambda),
     // TODO: try catch
     // TODO: receive after
     //
@@ -970,6 +983,80 @@ fn try_parse_case_expression(
     Ok((Expression::Case(case), offset))
 }
 
+fn try_parse_lambda(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "anonymous_function")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "fn")?;
+
+    dbg!("heyyy");
+
+    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+
+    let lambda_clause_parser = |code, tokens, offset| {
+        try_parse_lambda_simple_clause(code, tokens, offset)
+            .or_else(|_| try_parse_lambda_guard_clause(code, tokens, offset))
+    };
+
+    let (clauses, offset) = parse_until(code, tokens, offset, lambda_clause_parser, end_parser)?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
+    dbg!(&clauses);
+
+    let lambda = Lambda { clauses };
+
+    Ok((Expression::Lambda(lambda), offset))
+}
+
+fn try_parse_lambda_simple_clause(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<LambdaClause> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "stab_clause")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let comma_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+
+    let (arguments, offset) =
+        try_parse_sep_by(code, tokens, offset, try_parse_expression, comma_parser)?;
+
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (body, offset) = try_parse_stab_body(code, tokens, offset)?;
+
+    let lambda_clause = LambdaClause {
+        arguments,
+        body,
+        guard: None,
+    };
+
+    Ok((lambda_clause, offset))
+}
+
+fn try_parse_lambda_guard_clause(
+    code: &str,
+    tokens: &Vec<Node>,
+    offset: u64,
+) -> ParserResult<LambdaClause> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "stab_clause")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let comma_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+
+    let (arguments, offset) =
+        try_parse_sep_by(code, tokens, offset, try_parse_expression, comma_parser)?;
+
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "when")?;
+    let (guard, offset) = try_parse_expression(code, tokens, offset)?;
+
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (body, offset) = try_parse_stab_body(code, tokens, offset)?;
+
+    let lambda_clause = LambdaClause {
+        arguments,
+        body,
+        guard: Some(Box::new(guard)),
+    };
+
+    Ok((lambda_clause, offset))
+}
+
 fn try_parse_stab(
     code: &str,
     tokens: &Vec<Node>,
@@ -1043,9 +1130,9 @@ fn try_parse_case_arm_guard(
     let (guard_expression, offset) = try_parse_expression(code, tokens, offset)?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "body")?;
-    let (right, offset) = try_parse_expression(code, tokens, offset)?;
+    let (body, offset) = try_parse_expression(code, tokens, offset)?;
 
-    Ok(((left, right, guard_expression), offset))
+    Ok(((left, body, guard_expression), offset))
 }
 
 fn try_parse_do_block<'a>(
@@ -1421,6 +1508,7 @@ fn try_parse_expression<'a>(
         .or_else(|err| try_parse_case_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_cond_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_access_expression(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_lambda(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_function_capture(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_local_function_capture(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_alias(code, tokens, offset).map_err(|_| err))
@@ -3733,11 +3821,146 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_simple_lambda() {
+        let code = "fn a -> a + 10 end";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Lambda(Lambda {
+            clauses: vec![LambdaClause {
+                arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+                body: Expression::BinaryOperation(BinaryOperation {
+                    operator: BinaryOperator::Plus,
+                    left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    right: Box::new(Expression::Integer(10)),
+                }),
+                guard: None,
+            }],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_lambda_pattern_match() {
+        let code = r#"
+        fn %{a: 10} -> 10 end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Lambda(Lambda {
+            clauses: vec![LambdaClause {
+                arguments: vec![Expression::Map(Map {
+                    entries: vec![(
+                        Expression::Atom(Atom("a".to_string())),
+                        Expression::Integer(10),
+                    )],
+                })],
+                body: Expression::Integer(10),
+                guard: None,
+            }],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_lambda_multiple_clauses() {
+        let code = r#"
+        fn 1, b -> 10
+           _, _ -> 20
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Lambda(Lambda {
+            clauses: vec![
+                LambdaClause {
+                    arguments: vec![
+                        Expression::Integer(1),
+                        Expression::Identifier(Identifier("b".to_string())),
+                    ],
+                    body: Expression::Integer(10),
+                    guard: None,
+                },
+                LambdaClause {
+                    arguments: vec![
+                        Expression::Identifier(Identifier("_".to_string())),
+                        Expression::Identifier(Identifier("_".to_string())),
+                    ],
+                    body: Expression::Integer(20),
+                    guard: None,
+                },
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_lambda_body() {
+        let code = r#"
+        fn a ->
+            result = a + 1
+            result
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Lambda(Lambda {
+            clauses: vec![LambdaClause {
+                arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+                body: Block(vec![
+                    Expression::BinaryOperation(BinaryOperation {
+                        operator: BinaryOperator::Match,
+                        left: Box::new(Expression::Identifier(Identifier("result".to_string()))),
+                        right: Box::new(Expression::BinaryOperation(BinaryOperation {
+                            operator: BinaryOperator::Plus,
+                            left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                            right: Box::new(Expression::Integer(1)),
+                        })),
+                    }),
+                    Expression::Identifier(Identifier("result".to_string())),
+                ]),
+                guard: None,
+            }],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_lambda_guard() {
+        let code = r#"
+        fn a when is_integer(a) -> 10
+           _ -> 20
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Lambda(Lambda {
+            clauses: vec![
+                LambdaClause {
+                    arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+                    guard: Some(Box::new(Expression::Call(Call {
+                        target: Box::new(Expression::Identifier(Identifier(
+                            "is_integer".to_string(),
+                        ))),
+                        remote_callee: None,
+                        arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+                    }))),
+                    body: Expression::Integer(10),
+                },
+                LambdaClause {
+                    arguments: vec![Expression::Identifier(Identifier("_".to_string()))],
+                    guard: None,
+                    body: Expression::Integer(20),
+                },
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
 // TODO: parse parenthesis for grouping
-// TODO: parse anonymous function definition
 // TODO: support expressions in arguments (since these support pattern match as well)
 
 // TODO: (fn a -> a + 1 end).(10)
