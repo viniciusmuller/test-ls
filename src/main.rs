@@ -69,11 +69,6 @@ struct Struct {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Keyword {
-    pairs: Vec<(Expression, Expression)>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
 struct Attribute {
     name: Identifier,
     value: Box<Expression>,
@@ -88,7 +83,7 @@ struct Call {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Quote {
-    options: Option<Keyword>,
+    options: Option<List>,
     body: Box<Expression>,
 }
 
@@ -233,7 +228,7 @@ struct CaseArm {
 #[derive(Debug, PartialEq, Eq)]
 struct Require {
     target: Atom,
-    options: Option<Keyword>,
+    options: Option<List>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -251,19 +246,22 @@ struct DotAccess {
 #[derive(Debug, PartialEq, Eq)]
 struct Alias {
     target: Atom,
-    options: Option<Keyword>,
+    // TODO: maybe make empty list by default instead of None
+    options: Option<List>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct Use {
     target: Atom,
-    options: Option<Keyword>,
+    // TODO: maybe make empty list by default instead of None
+    options: Option<List>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct Import {
     target: Atom,
-    options: Option<Keyword>,
+    // TODO: maybe make empty list by default instead of None
+    options: Option<List>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -308,7 +306,6 @@ enum Expression {
     Atom(Atom),
     Map(Map),
     Struct(Struct),
-    KeywordList(Keyword),
     List(List),
     Tuple(Tuple),
     Identifier(Identifier),
@@ -644,24 +641,39 @@ fn try_parse_quote_oneline(
     let offset = try_consume(code, tokens, offset, arguments_p);
 
     let (mut options, offset) = try_parse_keyword_expressions(code, tokens, offset)
-        .or_else(|_| try_parse_keyword_list(code, tokens, offset))?;
+        .or_else(|_| try_parse_keyword_list(code, tokens, offset))
+        .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))?;
 
     let (has_another_pair, offset) = try_parse_grammar_name(code, tokens, offset, ",")
         .map(|(_, offset)| (true, offset))
         .unwrap_or((false, offset));
 
     let (block, offset) = if has_another_pair {
-        let (mut expr, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
-        try_extract_do_keyword(code, offset, expr.pairs.pop(), &quote_node)?
+        let (mut expr, offset) = try_parse_keyword_expressions(code, tokens, offset)
+            .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))?;
+
+        try_extract_do_keyword(code, offset, expr.pop(), &quote_node)?
     } else {
-        try_extract_do_keyword(code, offset, options.pairs.pop(), &quote_node)?
+        try_extract_do_keyword(code, offset, options.pop(), &quote_node)?
     };
 
     // If there was only one option and it was a `do:` keyword, there are no actual options
-    let options = if options.pairs.len() == 0 {
+    let options = if options.len() == 0 {
         None
     } else {
-        Some(options)
+        let list = List {
+            items: options
+                .into_iter()
+                .map(|(left, right)| {
+                    Expression::Tuple(Tuple {
+                        items: vec![left, right],
+                    })
+                })
+                .collect::<Vec<_>>(),
+            cons: None,
+        };
+
+        Some(list)
     };
 
     let quote = Expression::Quote(Quote {
@@ -690,7 +702,7 @@ fn try_extract_do_keyword<'a>(
     }
 }
 
-fn try_parse_keyword_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Keyword> {
+fn try_parse_keyword_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<List> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "list")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "[")?;
     let (options, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
@@ -755,8 +767,9 @@ fn try_parse_function_definition(
         .unwrap_or((false, offset));
 
     let (do_block, offset) = if is_keyword_form {
-        let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
-        let first_pair = keywords.pairs.remove(0);
+        let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)
+            .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))?;
+        let first_pair = keywords.remove(0);
         (first_pair.1, offset)
     } else {
         let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
@@ -775,21 +788,20 @@ fn try_parse_function_definition(
 }
 
 fn try_parse_do_keyword(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)
+    let (mut list, offset) = try_parse_keyword_expressions(code, tokens, offset)
         .or_else(|_| try_parse_keyword_list(code, tokens, offset))?;
 
-    let do_atom = Atom("do".to_string());
+    let do_atom = atom!("do");
 
-    match keywords.pairs.pop() {
-        Some((Expression::Atom(atom), _body)) => {
-            if atom == do_atom {
-                Ok((Expression::KeywordList(keywords), offset))
+    match list.items.pop().unwrap() {
+        Expression::Tuple(tuple) => {
+            if tuple.items[0] == do_atom && tuple.items.len() == 2 {
+                Ok((Expression::List(list), offset))
             } else {
-                todo!()
+                panic!("invalid tuple keyword was parsed")
             }
         }
-        // TODO: remove todo!() (probably this is unreachable)
-        Some(_) | None => todo!(),
+        _ => panic!("invalid tuple keyword was parsed"),
     }
 }
 
@@ -851,8 +863,9 @@ fn try_parse_macro_definition(
         .unwrap_or((false, offset));
 
     let (do_block, offset) = if is_keyword_form {
-        let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
-        let first_pair = keywords.pairs.remove(0);
+        let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)
+            .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))?;
+        let first_pair = keywords.remove(0);
         (first_pair.1, offset)
     } else {
         let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
@@ -1106,7 +1119,7 @@ fn try_parse_call_arguments(
     };
 
     let (keyword_arguments, offset) = try_parse_keyword_expressions(code, tokens, offset)
-        .map(|(keyword, offset)| (Some(Expression::KeywordList(keyword)), offset))
+        .map(|(keyword, offset)| (Some(Expression::List(keyword)), offset))
         .unwrap_or((None, offset));
 
     let offset = if has_parenthesis {
@@ -1134,11 +1147,28 @@ fn try_parse_keyword_expressions(
     code: &str,
     tokens: &Vec<Node>,
     offset: u64,
-) -> ParserResult<Keyword> {
+) -> ParserResult<List> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "keywords")?;
     let sep_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
-    try_parse_sep_by(code, tokens, offset, try_parse_keyword_pair, sep_parser)
-        .and_then(|(pairs, offset)| Ok((Keyword { pairs }, offset)))
+    try_parse_sep_by(code, tokens, offset, try_parse_keyword_pair, sep_parser).and_then(
+        |(pairs, offset)| {
+            let tuples = pairs
+                .into_iter()
+                .map(|(key, value)| {
+                    Expression::Tuple(Tuple {
+                        items: vec![key, value],
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let list = List {
+                items: tuples,
+                cons: None,
+            };
+
+            Ok((list, offset))
+        },
+    )
 }
 
 fn try_parse_sep_by<'a, T, S>(
@@ -1511,11 +1541,8 @@ fn try_parse_do_block<'a>(
     let (body, offset) = parse_until(code, tokens, offset, try_parse_expression, end_parser)
         .unwrap_or((vec![], offset));
 
-    let keyword = Keyword {
-        pairs: vec![(atom!("do"), Expression::Block(body))],
-    };
-
-    Ok((Expression::KeywordList(keyword), offset))
+    let list = list!(tuple!(atom!("do"), Expression::Block(body)));
+    Ok((list, offset))
 
     // let block_body_parser = |code, tokens, offset| {
     //     let end_parser = |code, tokens, offset| {
@@ -1629,10 +1656,9 @@ fn try_parse_map(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Ma
             .unwrap_or_else(|_| (vec![], offset));
 
     // Keyword-notation-only map
-    let (keyword_pairs, offset) = match try_parse_keyword_expressions(code, tokens, offset) {
-        Ok((keyword, new_offset)) => (keyword.pairs, new_offset),
-        Err(_) => (vec![], offset),
-    };
+    let (keyword_pairs, offset) = try_parse_keyword_expressions(code, tokens, offset)
+        .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))
+        .unwrap_or((vec![], offset));
 
     let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "}")?;
@@ -1654,10 +1680,9 @@ fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
     });
 
     // Keyword-notation-only map
-    let (keyword_pairs, offset) = match try_parse_keyword_expressions(code, tokens, offset) {
-        Ok((keyword, new_offset)) => (keyword.pairs, new_offset),
-        Err(_) => (vec![], offset),
-    };
+    let (keyword_pairs, offset) = try_parse_keyword_expressions(code, tokens, offset)
+        .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))
+        .unwrap_or((vec![], offset));
 
     // let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "}")?;
@@ -1666,6 +1691,25 @@ fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
         entries: keyword_pairs,
     };
     Ok((s, offset))
+}
+
+fn convert_keyword_expression_lists_to_tuples(list: List) -> Vec<(Expression, Expression)> {
+    list.items
+        .into_iter()
+        .map(|mut entry| extract_key_value_from_tuple(&mut entry))
+        .collect::<Vec<_>>()
+}
+
+/// Assumes the received expression is a keyword tuple and extracts the data or crashes otherwise
+fn extract_key_value_from_tuple(expr: &mut Expression) -> (Expression, Expression) {
+    match expr {
+        Expression::Tuple(tuple) => {
+            let b = tuple.items.pop().unwrap();
+            let a = tuple.items.pop().unwrap();
+            (a, b)
+        }
+        _ => panic!("expecting tuple but got another expression"),
+    }
 }
 
 fn try_parse_grouping(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -1692,7 +1736,7 @@ fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<E
     };
 
     let (keyword, offset) = try_parse_keyword_expressions(code, tokens, offset)
-        .and_then(|(keyword, offset)| Ok((Some(Expression::KeywordList(keyword)), offset)))
+        .map(|(keyword, offset)| (Some(Expression::List(keyword)), offset))
         .unwrap_or_else(|_| (None, offset));
 
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "]")?;
@@ -2145,7 +2189,7 @@ fn try_parse_module_operator(
     tokens: &Vec<Node>,
     offset: u64,
     target: &str,
-) -> ParserResult<(Atom, Option<Keyword>)> {
+) -> ParserResult<(Atom, Option<List>)> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, target)?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
@@ -2453,6 +2497,35 @@ macro_rules! binary_operation {
     };
 }
 
+#[macro_export]
+macro_rules! list {
+    ( $( $item:expr ),* ) => {
+        Expression::List(List {
+            items: vec![$($item,)*],
+            cons: None,
+        })
+    };
+}
+
+#[macro_export]
+macro_rules! tuple {
+    ( $( $item:expr ),* ) => {
+        Expression::Tuple(Tuple {
+            items: vec![$($item,)*],
+        })
+    };
+}
+
+#[macro_export]
+macro_rules! list_cons {
+    ( $items:expr, $cons:expr ) => {
+        Expression::List(List {
+            items: $items,
+            cons: $cons,
+        })
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::Expression::Block;
@@ -2613,9 +2686,7 @@ mod tests {
         let target = Block(vec![Expression::Call(Call {
             target: Box::new(id!("my_function")),
             remote_callee: None,
-            arguments: vec![Expression::KeywordList(Keyword {
-                pairs: vec![(atom!("keywords"), atom!("only"))],
-            })],
+            arguments: vec![list!(tuple!(atom!("keywords"), atom!("only")))],
         })]);
 
         assert_eq!(result, target);
@@ -2629,9 +2700,7 @@ mod tests {
         let target = Block(vec![Expression::Call(Call {
             target: Box::new(id!("inspect")),
             remote_callee: Some(Box::new(atom!("IO"))),
-            arguments: vec![Expression::KeywordList(Keyword {
-                pairs: vec![(atom!("label"), atom!("test"))],
-            })],
+            arguments: vec![list!(tuple!(atom!("label"), atom!("test")))],
         })]);
 
         assert_eq!(result, target);
@@ -2647,9 +2716,7 @@ mod tests {
             remote_callee: Some(Box::new(atom!("IO"))),
             arguments: vec![
                 id!("my_struct"),
-                Expression::KeywordList(Keyword {
-                    pairs: vec![(atom!("limit"), atom!("infinity"))],
-                }),
+                list!(tuple!(atom!("limit"), atom!("infinity"))),
             ],
         })]);
 
@@ -3092,10 +3159,7 @@ mod tests {
         [a, 10, :atom]
         ";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::List(List {
-            items: vec![id!("a"), int!(10), atom!("atom")],
-            cons: None,
-        })]);
+        let target = Block(vec![list!(id!("a"), int!(10), atom!("atom"))]);
 
         assert_eq!(result, target);
     }
@@ -3106,19 +3170,14 @@ mod tests {
         [a, b, module: :atom,   number: 200]
         ";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::List(List {
-            items: vec![
-                id!("a"),
-                id!("b"),
-                Expression::KeywordList(Keyword {
-                    pairs: vec![
-                        (atom!("module"), atom!("atom")),
-                        (atom!("number"), int!(200)),
-                    ],
-                }),
-            ],
-            cons: None,
-        })]);
+        let target = Block(vec![list!(
+            id!("a"),
+            id!("b"),
+            list!(
+                tuple!(atom!("module"), atom!("atom")),
+                tuple!(atom!("number"), int!(200))
+            )
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3127,10 +3186,7 @@ mod tests {
     fn parse_empty_list() {
         let code = "[]";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::List(List {
-            items: vec![],
-            cons: None,
-        })]);
+        let target = Block(vec![list!()]);
 
         assert_eq!(result, target);
     }
@@ -3140,15 +3196,9 @@ mod tests {
         let code = "[head, 10 | _tail] = [1, 2, 3]";
         let result = parse(&code).unwrap();
         let target = Block(vec![binary_operation!(
-            Expression::List(List {
-                items: vec![id!("head"), int!(10)],
-                cons: Some(Box::new(id!("_tail"))),
-            }),
+            list_cons!(vec![id!("head"), int!(10)], Some(Box::new(id!("_tail")))),
             BinaryOperator::Match,
-            Expression::List(List {
-                items: vec![int!(1), int!(2), int!(3)],
-                cons: None,
-            })
+            list!(int!(1), int!(2), int!(3))
         )]);
 
         assert_eq!(result, target);
@@ -3160,9 +3210,7 @@ mod tests {
         {a, 10, :atom}
         ";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Tuple(Tuple {
-            items: vec![id!("a"), int!(10), atom!("atom")],
-        })]);
+        let target = Block(vec![tuple!(id!("a"), int!(10), atom!("atom"))]);
 
         assert_eq!(result, target);
     }
@@ -3171,7 +3219,7 @@ mod tests {
     fn parse_empty_tuple() {
         let code = "{}";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Tuple(Tuple { items: vec![] })]);
+        let target = Block(vec![tuple!()]);
 
         assert_eq!(result, target);
     }
@@ -3507,10 +3555,7 @@ mod tests {
         let code = "[1, 2, 3] ++ tail";
         let result = parse(&code).unwrap();
         let target = Block(vec![binary_operation!(
-            Expression::List(List {
-                items: vec![int!(1), int!(2), int!(3)],
-                cons: None,
-            }),
+            list!(int!(1), int!(2), int!(3)),
             BinaryOperator::ListConcatenation,
             id!("tail")
         )]);
@@ -3525,10 +3570,7 @@ mod tests {
         let target = Block(vec![binary_operation!(
             id!("cache"),
             BinaryOperator::ListSubtraction,
-            Expression::List(List {
-                items: vec![int!(1), int!(2), int!(3)],
-                cons: None,
-            })
+            list!(int!(1), int!(2), int!(3))
         )]);
 
         assert_eq!(result, target);
@@ -3593,10 +3635,7 @@ mod tests {
         let target = Block(vec![binary_operation!(
             int!(1),
             BinaryOperator::In,
-            Expression::List(List {
-                items: vec![int!(1), int!(2), int!(3)],
-                cons: None,
-            })
+            list!(int!(1), int!(2), int!(3))
         )]);
 
         assert_eq!(result, target);
@@ -3609,10 +3648,7 @@ mod tests {
         let target = Block(vec![binary_operation!(
             int!(1),
             BinaryOperator::NotIn,
-            Expression::List(List {
-                items: vec![int!(1), int!(2), int!(3)],
-                cons: None,
-            })
+            list!(int!(1), int!(2), int!(3))
         )]);
 
         assert_eq!(result, target);
@@ -3874,8 +3910,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Require(Require {
             target: Atom("Logger".to_string()),
-            options: Some(Keyword {
-                pairs: vec![(atom!("level"), atom!("info"))],
+            options: Some(List {
+                items: vec![tuple!(atom!("level"), atom!("info"))],
+                cons: None,
             }),
         })]);
 
@@ -3904,8 +3941,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Alias(Alias {
             target: Atom("MyKeyword".to_string()),
-            options: Some(Keyword {
-                pairs: vec![(atom!("as"), atom!("Keyword"))],
+            options: Some(List {
+                items: vec![tuple!(atom!("as"), atom!("Keyword"))],
+                cons: None,
             }),
         })]);
 
@@ -3934,8 +3972,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Use(Use {
             target: Atom("MyModule".to_string()),
-            options: Some(Keyword {
-                pairs: vec![(atom!("some"), atom!("options"))],
+            options: Some(List {
+                items: vec![tuple!(atom!("some"), atom!("options"))],
+                cons: None,
             }),
         })]);
 
@@ -3964,14 +4003,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Import(Import {
             target: Atom("String".to_string()),
-            options: Some(Keyword {
-                pairs: vec![(
-                    atom!("only"),
-                    Expression::List(List {
-                        items: vec![atom!("split")],
-                        cons: None,
-                    }),
-                )],
+            options: Some(List {
+                items: vec![tuple!(atom!("only"), list!(atom!("split")))],
+                cons: None,
             }),
         })]);
 
@@ -4477,8 +4511,9 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Quote(Quote {
-            options: Some(Keyword {
-                pairs: vec![(atom!("line"), int!(10))],
+            options: Some(List {
+                items: vec![tuple!(atom!("line"), int!(10))],
+                cons: None,
             }),
             body: Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
         })]);
@@ -4515,8 +4550,12 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Quote(Quote {
-            options: Some(Keyword {
-                pairs: vec![(atom!("line"), int!(10)), (atom!("file"), nil!())],
+            options: Some(List {
+                items: vec![
+                    tuple!(atom!("line"), int!(10)),
+                    tuple!(atom!("file"), nil!()),
+                ],
+                cons: None,
             }),
             body: Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
         })]);
@@ -4767,11 +4806,7 @@ mod tests {
         "#;
         // call "schema" [do: (call field (:name, :string))]
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Sigil(Sigil {
-            name: "r".to_string(),
-            content: "hello".to_string(),
-            modifier: Some("i".to_string()),
-        })]);
+        let target = Block(vec![]);
 
         assert_eq!(result, target);
     }
