@@ -1,9 +1,9 @@
 use core::fmt;
 use std::fmt::Debug;
-use std::{env, ffi::OsStr, fs, io, path::Path};
+use std::{env, ffi::OsStr, fs, path::Path};
 
 use tree_sitter::{Node, Tree};
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Identifier(String);
@@ -328,7 +328,7 @@ enum Expression {
     Access(Access),
     DotAccess(DotAccess),
     FunctionCapture(FunctionCapture),
-    CaptureExpression(Box<Expression>),
+    Capture(Box<Expression>),
     Lambda(Lambda),
     Grouping(Box<Expression>),
     Sigil(Sigil),
@@ -465,7 +465,7 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     let tree = get_tree(code);
     let root_node = tree.root_node();
     let mut nodes = vec![];
-    flatten_node_children(code, root_node, &mut nodes);
+    flatten_node_children(root_node, &mut nodes);
 
     #[cfg(test)]
     dbg!(&nodes);
@@ -477,14 +477,14 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     Ok(Expression::Block(result))
 }
 
-fn flatten_node_children<'a>(code: &str, node: Node<'a>, vec: &mut Vec<Node<'a>>) {
+fn flatten_node_children<'a>(node: Node<'a>, vec: &mut Vec<Node<'a>>) {
     if node.child_count() > 0 {
         let mut walker = node.walk();
 
         for node in node.children(&mut walker) {
             if node.grammar_name() != "comment" {
                 vec.push(node);
-                flatten_node_children(code, node, vec);
+                flatten_node_children(node, vec);
             }
         }
     }
@@ -495,10 +495,10 @@ fn try_parse_module(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> Result<(Expression, u64), ParseError> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, "defmodule")?;
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (module_name, offset) = try_parse_module_name(code, tokens, offset)?;
 
     let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
@@ -517,9 +517,9 @@ fn try_parse_capture_expression_variable(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Identifier> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "&")?;
-    let (node, offset) = try_parse_grammar_name(code, tokens, offset, "integer")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "&")?;
+    let (node, offset) = try_parse_grammar_name(tokens, offset, "integer")?;
     let content = extract_node_text(code, &node);
     Ok((Identifier(format!("&{}", content)), offset))
 }
@@ -529,10 +529,10 @@ fn try_parse_capture_expression(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "&")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "&")?;
 
-    let (offset, has_parenthesis) = match try_parse_grammar_name(code, tokens, offset, "(") {
+    let (offset, has_parenthesis) = match try_parse_grammar_name(tokens, offset, "(") {
         Ok((_node, new_offset)) => (new_offset, true),
         Err(_) => (offset, false),
     };
@@ -540,13 +540,13 @@ fn try_parse_capture_expression(
     let (body, offset) = try_parse_expression(code, tokens, offset)?;
 
     let offset = if has_parenthesis {
-        let (_, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
+        let (_, new_offset) = try_parse_grammar_name(tokens, offset, ")")?;
         new_offset
     } else {
         offset
     };
 
-    let capture = Expression::CaptureExpression(Box::new(body));
+    let capture = Expression::Capture(Box::new(body));
     Ok((capture, offset))
 }
 
@@ -555,11 +555,11 @@ fn try_parse_remote_function_capture(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "&")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "dot")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "&")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "dot")?;
     let (remote_callee, offset) = try_parse_module_name(code, tokens, offset)
         .map(|(name, offset)| (FunctionCaptureRemoteCallee::Module(name), offset))
         .or_else(|_| {
@@ -567,9 +567,9 @@ fn try_parse_remote_function_capture(
             Ok((FunctionCaptureRemoteCallee::Variable(name), offset))
         })?;
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ".")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, ".")?;
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "/")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "/")?;
     let (arity, offset) = try_parse_integer(code, tokens, offset)?;
 
     let capture = Expression::FunctionCapture(FunctionCapture {
@@ -586,11 +586,11 @@ fn try_parse_local_function_capture(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "&")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "&")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "/")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "/")?;
     let (arity, offset) = try_parse_integer(code, tokens, offset)?;
 
     let capture = Expression::FunctionCapture(FunctionCapture {
@@ -609,11 +609,10 @@ fn try_parse_quote(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<
 }
 
 fn try_parse_quote_block(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, "quote")?;
 
-    let arguments_p =
-        |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "arguments");
+    let arguments_p = |_, tokens, offset| try_parse_grammar_name(tokens, offset, "arguments");
     let offset = try_consume(code, tokens, offset, arguments_p);
 
     let (options, offset) = try_parse_keyword_expressions(code, tokens, offset)
@@ -638,18 +637,17 @@ fn try_parse_quote_oneline(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (quote_node, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (quote_node, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, "quote")?;
 
-    let arguments_p =
-        |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "arguments");
+    let arguments_p = |_, tokens, offset| try_parse_grammar_name(tokens, offset, "arguments");
     let offset = try_consume(code, tokens, offset, arguments_p);
 
     let (mut options, offset) = try_parse_keyword_expressions(code, tokens, offset)
         .or_else(|_| try_parse_keyword_list(code, tokens, offset))
         .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))?;
 
-    let (has_another_pair, offset) = try_parse_grammar_name(code, tokens, offset, ",")
+    let (has_another_pair, offset) = try_parse_grammar_name(tokens, offset, ",")
         .map(|(_, offset)| (true, offset))
         .unwrap_or((false, offset));
 
@@ -657,13 +655,13 @@ fn try_parse_quote_oneline(
         let (mut expr, offset) = try_parse_keyword_expressions(code, tokens, offset)
             .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))?;
 
-        try_extract_do_keyword(code, offset, expr.pop(), &quote_node)?
+        try_extract_do_keyword(offset, expr.pop(), &quote_node)?
     } else {
-        try_extract_do_keyword(code, offset, options.pop(), &quote_node)?
+        try_extract_do_keyword(offset, options.pop(), &quote_node)?
     };
 
     // If there was only one option and it was a `do:` keyword, there are no actual options
-    let options = if options.len() == 0 {
+    let options = if options.is_empty() {
         None
     } else {
         let list = List {
@@ -689,8 +687,7 @@ fn try_parse_quote_oneline(
     Ok((quote, offset))
 }
 
-fn try_extract_do_keyword<'a>(
-    code: &str,
+fn try_extract_do_keyword(
     offset: u64,
     pair: Option<(Expression, Expression)>,
     start_node: &Node,
@@ -700,18 +697,18 @@ fn try_extract_do_keyword<'a>(
             if atom == Atom("do".to_string()) {
                 Ok((block, offset))
             } else {
-                return Err(build_unexpected_token_error(code, offset, "", start_node));
+                Err(build_unexpected_token_error(offset, start_node))
             }
         }
-        Some(_) | None => return Err(build_unexpected_token_error(code, offset, "", start_node)),
+        Some(_) | None => Err(build_unexpected_token_error(offset, start_node)),
     }
 }
 
 fn try_parse_keyword_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<List> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "list")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "[")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "list")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "[")?;
     let (options, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "]")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "]")?;
     Ok((options, offset))
 }
 
@@ -720,7 +717,7 @@ fn try_parse_function_definition(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
 
     let (offset, is_private) = match try_parse_keyword(code, tokens, offset, "defp") {
         Ok((_, offset)) => (offset, true),
@@ -734,32 +731,30 @@ fn try_parse_function_definition(
         (offset, is_private)
     };
 
-    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "arguments")
+    let offset = try_consume(code, tokens, offset, |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "arguments")
     });
 
-    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "call")
+    let offset = try_consume(code, tokens, offset, |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "call")
     });
 
-    match try_parse_function_guard(code, tokens, offset) {
-        Ok(((guard_expr, parameters, function_name), offset)) => {
-            dbg!(&guard_expr, offset);
-            let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
-            let list = extract_list(do_block_kw);
-            let do_block = keyword_fetch(&list, atom!("do")).unwrap();
+    if let Ok(((guard_expr, parameters, function_name), offset)) =
+        try_parse_function_guard(code, tokens, offset)
+    {
+        let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+        let list = extract_list(do_block_kw);
+        let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
-            let function = Expression::FunctionDef(Function {
-                name: function_name,
-                body: Box::new(do_block),
-                guard_expression: Some(Box::new(guard_expr)),
-                parameters,
-                is_private,
-            });
+        let function = Expression::FunctionDef(Function {
+            name: function_name,
+            body: Box::new(do_block),
+            guard_expression: Some(Box::new(guard_expr)),
+            parameters,
+            is_private,
+        });
 
-            return Ok((function, offset));
-        }
-        Err(_) => {}
+        return Ok((function, offset));
     };
 
     let (function_name, offset) = try_parse_identifier(code, tokens, offset)?;
@@ -767,8 +762,8 @@ fn try_parse_function_definition(
     let (parameters, offset) =
         try_parse_parameters(code, tokens, offset).unwrap_or((vec![], offset));
 
-    let (is_keyword_form, offset) = try_parse_grammar_name(code, tokens, offset, ",")
-        .map(|(_, offset)| ((true, offset)))
+    let (is_keyword_form, offset) = try_parse_grammar_name(tokens, offset, ",")
+        .map(|(_, offset)| (true, offset))
         .unwrap_or((false, offset));
 
     let (do_block, offset) = if is_keyword_form {
@@ -819,7 +814,7 @@ fn try_parse_macro_definition(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
 
     let (offset, is_private) = match try_parse_keyword(code, tokens, offset, "defmacrop") {
         Ok((_, offset)) => (offset, true),
@@ -833,31 +828,30 @@ fn try_parse_macro_definition(
         (offset, is_private)
     };
 
-    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "arguments")
+    let offset = try_consume(code, tokens, offset, |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "arguments")
     });
 
-    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "call")
+    let offset = try_consume(code, tokens, offset, |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "call")
     });
 
-    match try_parse_function_guard(code, tokens, offset) {
-        Ok(((guard_expr, parameters, macro_name), offset)) => {
-            let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
-            let list = extract_list(do_block_kw);
-            let do_block = keyword_fetch(&list, atom!("do")).unwrap();
+    if let Ok(((guard_expr, parameters, macro_name), offset)) =
+        try_parse_function_guard(code, tokens, offset)
+    {
+        let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+        let list = extract_list(do_block_kw);
+        let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
-            let macro_def = Expression::MacroDef(Macro {
-                name: macro_name,
-                body: Box::new(do_block),
-                guard_expression: Some(Box::new(guard_expr)),
-                parameters,
-                is_private,
-            });
+        let macro_def = Expression::MacroDef(Macro {
+            name: macro_name,
+            body: Box::new(do_block),
+            guard_expression: Some(Box::new(guard_expr)),
+            parameters,
+            is_private,
+        });
 
-            return Ok((macro_def, offset));
-        }
-        Err(_) => {}
+        return Ok((macro_def, offset));
     };
 
     let (macro_name, offset) = try_parse_identifier(code, tokens, offset)?;
@@ -865,8 +859,8 @@ fn try_parse_macro_definition(
     let (parameters, offset) =
         try_parse_parameters(code, tokens, offset).unwrap_or((vec![], offset));
 
-    let (is_keyword_form, offset) = try_parse_grammar_name(code, tokens, offset, ",")
-        .map(|(_, offset)| ((true, offset)))
+    let (is_keyword_form, offset) = try_parse_grammar_name(tokens, offset, ",")
+        .map(|(_, offset)| (true, offset))
         .unwrap_or((false, offset));
 
     let (do_block, offset) = if is_keyword_form {
@@ -897,8 +891,8 @@ fn try_parse_function_guard(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<(Expression, Vec<Parameter>, Identifier)> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (function_name, offset) = try_parse_identifier(code, tokens, offset)?;
 
     let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
@@ -906,10 +900,10 @@ fn try_parse_function_guard(
         Err(_) => (vec![], offset),
     };
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "when")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "when")?;
     let (guard_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
-    let comma_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+    let comma_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
     let offset = try_consume(code, tokens, offset, comma_parser);
 
     Ok(((guard_expression, parameters, function_name), offset))
@@ -920,14 +914,14 @@ fn try_parse_parameters(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Vec<Parameter>> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
 
-    let (offset, has_parenthesis) = match try_parse_grammar_name(code, tokens, offset, "(") {
+    let (offset, has_parenthesis) = match try_parse_grammar_name(tokens, offset, "(") {
         Ok((_node, new_offset)) => (new_offset, true),
         Err(_) => (offset, false),
     };
 
-    let sep_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+    let sep_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
     let (parameters, offset) =
         match try_parse_sep_by(code, tokens, offset, try_parse_parameter, sep_parser) {
             Ok((parameters, offset)) => (parameters, offset),
@@ -935,7 +929,7 @@ fn try_parse_parameters(
         };
 
     let offset = if has_parenthesis {
-        let (_, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
+        let (_, new_offset) = try_parse_grammar_name(tokens, offset, ")")?;
         new_offset
     } else {
         offset
@@ -963,9 +957,9 @@ fn try_parse_parameter_default_value(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Parameter> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
     let (expression, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, r#"\\"#)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, r#"\\"#)?;
     let (default, offset) = try_parse_expression(code, tokens, offset)?;
 
     let parameter = Parameter {
@@ -977,7 +971,6 @@ fn try_parse_parameter_default_value(
 }
 
 fn try_parse_grammar_name<'a>(
-    code: &str,
     tokens: &Vec<Node<'a>>,
     offset: u64,
     expected: &str,
@@ -985,7 +978,7 @@ fn try_parse_grammar_name<'a>(
     if tokens.len() == offset as usize {
         let node = tokens.last().unwrap();
 
-        return Err(build_unexpected_token_error(code, offset, "", &node));
+        return Err(build_unexpected_token_error(offset, node));
     }
 
     let token = tokens[offset as usize];
@@ -994,15 +987,11 @@ fn try_parse_grammar_name<'a>(
     if actual == expected {
         Ok((token, offset + 1))
     } else {
-        Err(build_unexpected_token_error(code, offset, expected, &token))
+        Err(build_unexpected_token_error(offset, &token))
     }
 }
 
-fn try_parse_identifier<'a>(
-    code: &str,
-    tokens: &Vec<Node<'a>>,
-    offset: u64,
-) -> ParserResult<Identifier> {
+fn try_parse_identifier(code: &str, tokens: &[Node], offset: u64) -> ParserResult<Identifier> {
     let token = tokens[offset as usize];
     let actual = token.grammar_name();
     let identifier_name = extract_node_text(code, &token);
@@ -1023,18 +1012,13 @@ fn try_parse_identifier<'a>(
     if actual == "identifier" {
         Ok((Identifier(identifier_name), offset + 1))
     } else {
-        Err(build_unexpected_token_error(
-            code,
-            offset,
-            "identifier",
-            &token,
-        ))
+        Err(build_unexpected_token_error(offset, &token))
     }
 }
 
-fn try_parse_keyword<'a>(
+fn try_parse_keyword(
     code: &str,
-    tokens: &Vec<Node<'a>>,
+    tokens: &[Node],
     offset: u64,
     keyword: &str,
 ) -> ParserResult<Identifier> {
@@ -1045,7 +1029,7 @@ fn try_parse_keyword<'a>(
     if grammar_name == "identifier" && identifier_name == keyword {
         Ok((Identifier(identifier_name), offset + 1))
     } else {
-        Err(build_unexpected_token_error(code, offset, keyword, &token))
+        Err(build_unexpected_token_error(offset, &token))
     }
 }
 
@@ -1062,10 +1046,10 @@ fn try_consume<'a, T>(
 }
 
 fn try_parse_remote_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "dot")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "dot")?;
     let (remote_callee, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ".")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, ".")?;
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
     let (mut arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
 
@@ -1085,7 +1069,7 @@ fn try_parse_remote_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserR
 }
 
 fn try_parse_local_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
     let (mut arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
 
@@ -1109,9 +1093,9 @@ fn try_parse_call_arguments(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Vec<Expression>> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
 
-    let (offset, has_parenthesis) = match try_parse_grammar_name(code, tokens, offset, "(") {
+    let (offset, has_parenthesis) = match try_parse_grammar_name(tokens, offset, "(") {
         Ok((_node, new_offset)) => (new_offset, true),
         Err(_) => (offset, false),
     };
@@ -1126,7 +1110,7 @@ fn try_parse_call_arguments(
         .unwrap_or((None, offset));
 
     let offset = if has_parenthesis {
-        let (_, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
+        let (_, new_offset) = try_parse_grammar_name(tokens, offset, ")")?;
         new_offset
     } else {
         offset
@@ -1142,7 +1126,7 @@ fn parse_expressions_sep_by_comma(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Vec<Expression>> {
-    let sep_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+    let sep_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
     try_parse_sep_by(code, tokens, offset, try_parse_expression, sep_parser)
 }
 
@@ -1151,8 +1135,8 @@ fn try_parse_keyword_expressions(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<List> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "keywords")?;
-    let sep_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "keywords")?;
+    let sep_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
 
     try_parse_sep_by(code, tokens, offset, try_parse_keyword_pair, sep_parser).map(
         |(pairs, offset)| {
@@ -1220,16 +1204,16 @@ fn try_parse_keyword_pair(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<(Expression, Expression)> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "pair")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "pair")?;
 
-    let (atom, offset) = match try_parse_grammar_name(code, tokens, offset, "keyword") {
+    let (atom, offset) = match try_parse_grammar_name(tokens, offset, "keyword") {
         Ok((atom_node, offset)) => {
             let atom_text = extract_node_text(code, &atom_node);
             // transform atom string from `atom: ` into `atom`
             let clean_atom = atom_text
                 .split_whitespace()
                 .collect::<String>()
-                .strip_suffix(":")
+                .strip_suffix(':')
                 .unwrap()
                 .to_string();
 
@@ -1244,10 +1228,10 @@ fn try_parse_keyword_pair(
 }
 
 fn try_parse_quoted_keyword(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Atom> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "quoted_keyword")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "\"")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "quoted_keyword")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
     let (quoted_content, offset) = try_parse_quoted_content(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "\"")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
     Ok((Atom(quoted_content), offset))
 }
 
@@ -1256,15 +1240,15 @@ fn try_parse_cond_expression(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, "cond")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "do_block")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "do")?;
 
-    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+    let end_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, "end");
 
-    let (arms, offset) = parse_until(code, tokens, offset, try_parse_stab, end_parser).and_then(
-        |(arms, offset)| {
+    let (arms, offset) =
+        parse_until(code, tokens, offset, try_parse_stab, end_parser).map(|(arms, offset)| {
             let arms = arms
                 .into_iter()
                 .map(|(left, right)| CondArm {
@@ -1273,9 +1257,8 @@ fn try_parse_cond_expression(
                 })
                 .collect();
 
-            Ok((arms, offset))
-        },
-    )?;
+            (arms, offset)
+        })?;
     let (_, offset) = end_parser(code, tokens, offset)?;
 
     let case = CondExpression { arms };
@@ -1288,11 +1271,11 @@ fn try_parse_access_expression(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "access_call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "access_call")?;
     let (target, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "[")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "[")?;
     let (access_expression, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "]")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "]")?;
 
     let access = Access {
         target: Box::new(target),
@@ -1307,16 +1290,16 @@ fn try_parse_case_expression(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, "case")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
 
     let (case_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "do_block")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "do")?;
 
-    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+    let end_parser = |_code, tokens, offset| try_parse_grammar_name(tokens, offset, "end");
     let (arms, offset) = parse_until(code, tokens, offset, try_parse_case_arm, end_parser)?;
     let (_, offset) = end_parser(code, tokens, offset)?;
 
@@ -1329,23 +1312,22 @@ fn try_parse_case_expression(
 }
 
 fn try_parse_sigil(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "sigil")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "~")?;
-    let (name_node, offset) = try_parse_grammar_name(code, tokens, offset, "sigil_name")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "sigil")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "~")?;
+    let (name_node, offset) = try_parse_grammar_name(tokens, offset, "sigil_name")?;
     let sigil_name = extract_node_text(code, &name_node);
 
     let sigil_open_delimiters = vec!["/", "|", "\"", "'", "(", " [", "{", "<"];
     let sigil_close_delimiters = vec!["/", "|", "\"", "'", ")", " ]", "}", ">"];
 
-    let (_, offset) = try_parse_either_token(code, tokens, offset, sigil_open_delimiters)?;
+    let (_, offset) = try_parse_either_token(tokens, offset, &sigil_open_delimiters)?;
 
-    let (sigil_content_node, offset) =
-        try_parse_grammar_name(code, tokens, offset, "quoted_content")?;
+    let (sigil_content_node, offset) = try_parse_grammar_name(tokens, offset, "quoted_content")?;
     let sigil_content = extract_node_text(code, &sigil_content_node);
 
-    let (_, offset) = try_parse_either_token(code, tokens, offset, sigil_close_delimiters)?;
+    let (_, offset) = try_parse_either_token(tokens, offset, &sigil_close_delimiters)?;
 
-    let (modifier, offset) = try_parse_grammar_name(code, tokens, offset, "sigil_modifiers")
+    let (modifier, offset) = try_parse_grammar_name(tokens, offset, "sigil_modifiers")
         .map(|(node, offset)| {
             let sigil_content = extract_node_text(code, &node);
             (Some(sigil_content), offset)
@@ -1363,30 +1345,27 @@ fn try_parse_sigil(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<
 
 // TODO: use in more places
 fn try_parse_either_token<'a>(
-    code: &'a str,
     tokens: &'a Vec<Node>,
     offset: u64,
-    allowed_tokens: Vec<&'static str>,
+    allowed_tokens: &Vec<&'static str>,
 ) -> ParserResult<Node<'a>> {
     for token in allowed_tokens {
-        if let Ok((node, offset)) = try_parse_grammar_name(code, tokens, offset, token) {
+        if let Ok((node, offset)) = try_parse_grammar_name(tokens, offset, token) {
             return Ok((node, offset));
         }
     }
 
     Err(build_unexpected_token_error(
-        code,
         offset,
-        "",
         &tokens[offset as usize],
     ))
 }
 
 fn try_parse_lambda(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "anonymous_function")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "fn")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "anonymous_function")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "fn")?;
 
-    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+    let end_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, "end");
 
     let lambda_clause_parser = |code, tokens, offset| {
         try_parse_lambda_simple_clause(code, tokens, offset)
@@ -1394,7 +1373,7 @@ fn try_parse_lambda(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
     };
 
     let (clauses, offset) = parse_until(code, tokens, offset, lambda_clause_parser, end_parser)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "end")?;
 
     let lambda = Lambda { clauses };
 
@@ -1406,14 +1385,14 @@ fn try_parse_lambda_simple_clause(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<LambdaClause> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "stab_clause")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
-    let comma_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "stab_clause")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
+    let comma_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
 
     let (arguments, offset) =
         try_parse_sep_by(code, tokens, offset, try_parse_expression, comma_parser)?;
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "->")?;
     let (body, offset) = try_parse_stab_body(code, tokens, offset)?;
 
     let lambda_clause = LambdaClause {
@@ -1430,18 +1409,18 @@ fn try_parse_lambda_guard_clause(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<LambdaClause> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "stab_clause")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
-    let comma_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "stab_clause")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
+    let comma_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
 
     let (arguments, offset) =
         try_parse_sep_by(code, tokens, offset, try_parse_expression, comma_parser)?;
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "when")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "when")?;
     let (guard, offset) = try_parse_expression(code, tokens, offset)?;
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "->")?;
     let (body, offset) = try_parse_stab_body(code, tokens, offset)?;
 
     let lambda_clause = LambdaClause {
@@ -1458,20 +1437,20 @@ fn try_parse_stab(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<(Expression, Expression)> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "stab_clause")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "stab_clause")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (left, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "->")?;
     let (body, offset) = try_parse_stab_body(code, tokens, offset)?;
     Ok(((left, body), offset))
 }
 
 fn try_parse_stab_body(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "body")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "body")?;
 
-    let end_parser = |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "stab_clause")
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "end"))
+    let end_parser = |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "stab_clause")
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "end"))
     };
 
     let (mut body, offset) = parse_until(code, tokens, offset, try_parse_expression, end_parser)?;
@@ -1485,24 +1464,21 @@ fn try_parse_stab_body(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserRes
 }
 
 fn try_parse_case_arm(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<CaseArm> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "stab_clause")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "stab_clause")?;
 
-    match try_parse_case_arm_guard(code, tokens, offset) {
-        Ok(((left, right, guard), offset)) => {
-            let case_arm = CaseArm {
-                left: Box::new(left),
-                body: Box::new(right),
-                guard_expr: Some(Box::new(guard)),
-            };
+    if let Ok(((left, right, guard), offset)) = try_parse_case_arm_guard(code, tokens, offset) {
+        let case_arm = CaseArm {
+            left: Box::new(left),
+            body: Box::new(right),
+            guard_expr: Some(Box::new(guard)),
+        };
 
-            return Ok((case_arm, offset));
-        }
-        Err(_) => {}
+        return Ok((case_arm, offset));
     }
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (left, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "->")?;
     let (body, offset) = try_parse_stab_body(code, tokens, offset)?;
 
     let case_arm = CaseArm {
@@ -1519,13 +1495,13 @@ fn try_parse_case_arm_guard(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<(Expression, Expression, Expression)> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (left, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "when")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "when")?;
     let (guard_expression, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "->")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "body")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "body")?;
     let (body, offset) = try_parse_expression(code, tokens, offset)?;
 
     Ok(((left, body, guard_expression), offset))
@@ -1535,52 +1511,48 @@ fn try_parse_case_arm_guard(
 // for keyword syntax
 
 /// Parses a sugarized do block and returns a desugarized keyword structure
-fn try_parse_do_block<'a>(
-    code: &str,
-    tokens: &Vec<Node<'a>>,
-    offset: u64,
-) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do")?;
+fn try_parse_do_block(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "do_block")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "do")?;
 
     // TODO: do a bit of cleanup on this parser
-    let block_end_parser = |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "end")
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "else_block"))
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "after_block"))
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "rescue_block"))
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "catch_block"))
+    let block_end_parser = |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "end")
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "else_block"))
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "after_block"))
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "rescue_block"))
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "catch_block"))
     };
 
     let optional_block_end_parser =
-        |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+        |_, tokens, offset| try_parse_grammar_name(tokens, offset, "end");
 
     let (mut body, offset) =
         parse_until(code, tokens, offset, try_parse_expression, block_end_parser)
             .unwrap_or((vec![], offset));
 
-    let optional_block_parser = |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "else")
+    let optional_block_parser = |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "else")
             .map(|(_, offset)| (atom!("else"), offset))
             .or_else(|_| {
-                try_parse_grammar_name(code, tokens, offset, "after")
+                try_parse_grammar_name(tokens, offset, "after")
                     .map(|(_, offset)| (atom!("after"), offset))
             })
             .or_else(|_| {
-                try_parse_grammar_name(code, tokens, offset, "rescue")
+                try_parse_grammar_name(tokens, offset, "rescue")
                     .map(|(_, offset)| (atom!("rescue"), offset))
             })
             .or_else(|_| {
-                try_parse_grammar_name(code, tokens, offset, "catch")
+                try_parse_grammar_name(tokens, offset, "catch")
                     .map(|(_, offset)| (atom!("catch"), offset))
             })
     };
 
-    let optional_block_start_parser = |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "else_block")
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "after_block"))
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "rescue_block"))
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "catch_block"))
+    let optional_block_start_parser = |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "else_block")
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "after_block"))
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "rescue_block"))
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "catch_block"))
     };
 
     let (optional_block, optional_block_atom, offset) =
@@ -1600,7 +1572,7 @@ fn try_parse_do_block<'a>(
             })
             .unwrap_or((None, None, offset));
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "end")?;
 
     // TODO: move to a helper function
     let body = if body.len() == 1 {
@@ -1629,30 +1601,30 @@ fn try_parse_do_block<'a>(
 }
 
 fn try_parse_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (atom_node, offset) = try_parse_grammar_name(code, tokens, offset, "atom")?;
+    let (atom_node, offset) = try_parse_grammar_name(tokens, offset, "atom")?;
     let atom_string = extract_node_text(code, &atom_node)[1..].to_string();
     Ok((Expression::Atom(Atom(atom_string)), offset))
 }
 
 fn try_parse_quoted_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "quoted_atom")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ":")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "\"")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "quoted_atom")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, ":")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
     let (atom_content, offset) = try_parse_quoted_content(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "\"")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "\"")?;
     Ok((Expression::Atom(Atom(atom_content)), offset))
 }
 
-fn try_parse_bool(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "boolean")?;
+fn try_parse_bool(tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "boolean")?;
 
-    let (boolean_result, offset) = match try_parse_grammar_name(code, tokens, offset, "true") {
+    let (boolean_result, offset) = match try_parse_grammar_name(tokens, offset, "true") {
         Ok((_, offset)) => (true, offset),
         Err(_) => (false, offset),
     };
 
     let (boolean_result, offset) = if !boolean_result {
-        let (_, offset) = try_parse_grammar_name(code, tokens, offset, "false")?;
+        let (_, offset) = try_parse_grammar_name(tokens, offset, "false")?;
         (false, offset)
     } else {
         (boolean_result, offset)
@@ -1661,28 +1633,28 @@ fn try_parse_bool(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<E
     Ok((Expression::Bool(boolean_result), offset))
 }
 
-fn try_parse_nil(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+fn try_parse_nil(tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     // INFO: for some reason treesitter-elixir outputs nil twice with the same span for each nil,
     // so we consume both
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "nil")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "nil")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "nil")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "nil")?;
     Ok((Expression::Nil, offset))
 }
 
 fn try_parse_map(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Map> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "map")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "%")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "{")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "map")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "%")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "{")?;
 
     // TODO: why is this the only case with a very weird and different grammar_name than what's
     // shown on debug? dbg!() for the Node says it's map_content but it's rather _items_with_trailing_separator
-    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "_items_with_trailing_separator")
+    let offset = try_consume(code, tokens, offset, |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "_items_with_trailing_separator")
     });
 
     let key_value_parser =
         |code, tokens, offset| try_parse_specific_binary_operator(code, tokens, offset, "=>");
-    let comma_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
+    let comma_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
     let (expression_pairs, offset) =
         try_parse_sep_by(code, tokens, offset, key_value_parser, comma_parser)
             .unwrap_or_else(|_| (vec![], offset));
@@ -1693,22 +1665,22 @@ fn try_parse_map(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Ma
         .unwrap_or((vec![], offset));
 
     let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "}")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
     let map = Map { entries: pairs };
     Ok((map, offset))
 }
 
 fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Struct> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "map")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "%")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "struct")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "map")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "%")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "struct")?;
     let (struct_name, offset) = try_parse_module_name(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "{")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "{")?;
 
     // TODO: why is this the only case with a very weird and different grammar_name than what's
     // shown on debug? dbg!() for the Node says it's map_content but it's rather _items_with_trailing_separator
-    let offset = try_consume(code, tokens, offset, |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "_items_with_trailing_separator")
+    let offset = try_consume(code, tokens, offset, |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "_items_with_trailing_separator")
     });
 
     // Keyword-notation-only map
@@ -1717,7 +1689,7 @@ fn try_parse_struct(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult
         .unwrap_or((vec![], offset));
 
     // let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "}")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
     let s = Struct {
         name: struct_name,
         entries: keyword_pairs,
@@ -1745,17 +1717,17 @@ fn extract_key_value_from_tuple(expr: &mut Expression) -> (Expression, Expressio
 }
 
 fn try_parse_grouping(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "block")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "(")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "block")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "(")?;
     let (expression, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, ")")?;
     let grouping = Expression::Grouping(Box::new(expression));
     Ok((grouping, offset))
 }
 
 fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "list")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "[")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "list")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "[")?;
 
     let (expressions, offset) =
         parse_expressions_sep_by_comma(code, tokens, offset).unwrap_or_else(|_| (vec![], offset));
@@ -1771,7 +1743,7 @@ fn try_parse_list(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<E
         .map(|(keyword, offset)| (Some(Expression::List(keyword)), offset))
         .unwrap_or_else(|_| (None, offset));
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "]")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "]")?;
     let expressions = expressions
         .into_iter()
         .chain(expr_before_cons)
@@ -1790,9 +1762,9 @@ fn try_parse_list_cons(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<(Expression, Expression)> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
     let (expr_before_cons, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "|")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "|")?;
     let (cons_expr, offset) = try_parse_expression(code, tokens, offset)?;
     Ok(((expr_before_cons, cons_expr), offset))
 }
@@ -1803,9 +1775,9 @@ fn try_parse_specific_binary_operator(
     offset: u64,
     expected_operator: &str,
 ) -> ParserResult<(Expression, Expression)> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
     let (left, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, expected_operator)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, expected_operator)?;
     let (right, offset) = try_parse_expression(code, tokens, offset)?;
     Ok(((left, right), offset))
 }
@@ -1815,11 +1787,11 @@ fn try_parse_attribute_definition(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Attribute> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "@")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "@")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (attribute_name, offset) = try_parse_identifier(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (value, offset) = try_parse_expression(code, tokens, offset)?;
 
     Ok((
@@ -1836,8 +1808,8 @@ fn try_parse_attribute_reference(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Identifier> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "@")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "@")?;
     let (attribute_name, offset) = try_parse_identifier(code, tokens, offset)?;
     Ok((attribute_name, offset))
 }
@@ -1847,13 +1819,13 @@ fn try_parse_tuple(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> Result<(Tuple, u64), ParseError> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "tuple")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "{")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "tuple")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "{")?;
     let (expressions, offset) = match parse_expressions_sep_by_comma(code, tokens, offset) {
         Ok(result) => result,
         Err(_) => (vec![], offset),
     };
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "}")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
 
     let tuple = Tuple { items: expressions };
     Ok((tuple, offset))
@@ -1864,16 +1836,16 @@ fn try_parse_integer(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> Result<(usize, u64), ParseError> {
-    let (integer_node, offset) = try_parse_grammar_name(code, tokens, offset, "integer")?;
+    let (integer_node, offset) = try_parse_grammar_name(tokens, offset, "integer")?;
     let integer_text = extract_node_text(code, &integer_node);
-    let integer_text = integer_text.replace("_", "");
+    let integer_text = integer_text.replace('_', "");
 
-    let result = if integer_text.starts_with("0b") {
-        usize::from_str_radix(&integer_text[2..], 2).unwrap()
-    } else if integer_text.starts_with("0x") {
-        usize::from_str_radix(&integer_text[2..], 16).unwrap()
-    } else if integer_text.starts_with("0o") {
-        usize::from_str_radix(&integer_text[2..], 8).unwrap()
+    let result = if let Some(stripped) = integer_text.strip_prefix("0b") {
+        usize::from_str_radix(stripped, 2).unwrap()
+    } else if let Some(stripped) = integer_text.strip_prefix("0x") {
+        usize::from_str_radix(stripped, 16).unwrap()
+    } else if let Some(stripped) = integer_text.strip_prefix("0o") {
+        usize::from_str_radix(stripped, 8).unwrap()
     } else {
         integer_text.parse::<usize>().unwrap()
     };
@@ -1886,9 +1858,9 @@ fn try_parse_float(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> Result<(Float, u64), ParseError> {
-    let (float_node, offset) = try_parse_grammar_name(code, tokens, offset, "float")?;
+    let (float_node, offset) = try_parse_grammar_name(tokens, offset, "float")?;
     let float_text = extract_node_text(code, &float_node);
-    let float_text = float_text.replace("_", "");
+    let float_text = float_text.replace('_', "");
 
     let f = float_text.parse::<f64>().unwrap();
     Ok((Float(f), offset))
@@ -1899,18 +1871,17 @@ fn try_parse_string(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> Result<(String, u64), ParseError> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "string")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "string")?;
     let quotes = vec!["\"", "\"\"\""];
-    let (_, offset) = try_parse_either_grammar_name(code, tokens, offset, &quotes)?;
+    let (_, offset) = try_parse_either_token(tokens, offset, &quotes)?;
 
     // empty string
-    match try_parse_either_grammar_name(code, tokens, offset, &quotes) {
-        Ok((_, offset)) => return Ok((String::new(), offset)),
-        Err(_) => {}
+    if let Ok((_, offset)) = try_parse_either_token(tokens, offset, &quotes) {
+        return Ok((String::new(), offset));
     };
 
     let (string_text, offset) = try_parse_quoted_content(code, tokens, offset)?;
-    let (_, offset) = try_parse_either_grammar_name(code, tokens, offset, &quotes)?;
+    let (_, offset) = try_parse_either_token(tokens, offset, &quotes)?;
     Ok((string_text, offset))
 }
 
@@ -1918,21 +1889,21 @@ fn try_parse_string(
 /// It concatenates escape sequences and interpolations into the string
 fn try_parse_quoted_content(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<String> {
     let parser = |code, tokens, offset| {
-        let (string_node, offset) = try_parse_grammar_name(code, tokens, offset, "quoted_content")
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "escape_sequence"))
+        let (string_node, offset) = try_parse_grammar_name(tokens, offset, "quoted_content")
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "escape_sequence"))
             .or_else(|_| try_parse_interpolation(code, tokens, offset))?;
 
         let string_text = extract_node_text(code, &string_node);
         Ok((string_text, offset))
     };
 
-    let end_parser = |code, tokens, offset| {
-        try_parse_grammar_name(code, tokens, offset, "\"")
-            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "\"\"\""))
+    let end_parser = |_, tokens, offset| {
+        try_parse_grammar_name(tokens, offset, "\"")
+            .or_else(|_| try_parse_grammar_name(tokens, offset, "\"\"\""))
     };
 
     parse_until(code, tokens, offset, parser, end_parser)
-        .and_then(|(strings, offset)| Ok((strings.join(""), offset)))
+        .map(|(strings, offset)| (strings.join(""), offset))
 }
 
 // interpolations are discarded for now
@@ -1942,49 +1913,24 @@ fn try_parse_interpolation<'a>(
     tokens: &Vec<Node<'a>>,
     offset: u64,
 ) -> ParserResult<Node<'a>> {
-    let (interpolation_node, offset) =
-        try_parse_grammar_name(code, tokens, offset, "interpolation")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "#{")?;
+    let (interpolation_node, offset) = try_parse_grammar_name(tokens, offset, "interpolation")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "#{")?;
     let (_, offset) = try_parse_expression(code, tokens, offset)?;
 
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "}")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "}")?;
     Ok((interpolation_node, offset))
-}
-
-fn try_parse_either_grammar_name<'a>(
-    code: &str,
-    tokens: &Vec<Node<'a>>,
-    offset: u64,
-    grammar_names: &Vec<&str>,
-) -> Result<(Node<'a>, u64), ParseError> {
-    for grammar_name in grammar_names {
-        match try_parse_grammar_name(code, tokens, offset, grammar_name) {
-            Ok(result) => return Ok(result),
-            Err(_) => {}
-        }
-    }
-
-    let token = tokens[offset as usize];
-    let expected = grammar_names.join(", ");
-    Err(build_unexpected_token_error(
-        code, offset, &expected, &token,
-    ))
 }
 
 /// Grammar_name = alias means module names in the TS elixir grammar.
 /// e.g: ThisIsAnAlias, Elixir.ThisIsAlsoAnAlias
 /// as these are also technically atoms, we return them as atoms
 fn try_parse_module_name(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Atom> {
-    let (atom_node, offset) = try_parse_grammar_name(code, tokens, offset, "alias")?;
+    let (atom_node, offset) = try_parse_grammar_name(tokens, offset, "alias")?;
     let atom_string = extract_node_text(code, &atom_node);
     Ok((Atom(atom_string), offset))
 }
 
-fn try_parse_expression<'a>(
-    code: &str,
-    tokens: &Vec<Node<'a>>,
-    offset: u64,
-) -> ParserResult<Expression> {
+fn try_parse_expression(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     try_parse_module(code, tokens, offset)
         .or_else(|err| try_parse_grouping(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_call(code, tokens, offset).map_err(|_| err))
@@ -2014,55 +1960,55 @@ fn try_parse_expression<'a>(
         .or_else(|err| try_parse_local_call(code, tokens, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_module_name(code, tokens, offset)
-                .and_then(|(atom, offset)| Ok((Expression::Atom(atom), offset)))
+                .map(|(atom, offset)| (Expression::Atom(atom), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| {
             try_parse_string(code, tokens, offset)
-                .and_then(|(string, offset)| Ok((Expression::String(string), offset)))
+                .map(|(string, offset)| (Expression::String(string), offset))
                 .map_err(|_| err)
         })
-        .or_else(|err| try_parse_nil(code, tokens, offset).map_err(|_| err))
-        .or_else(|err| try_parse_bool(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_nil(tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_bool(tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_atom(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_quoted_atom(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_list(code, tokens, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_tuple(code, tokens, offset)
-                .and_then(|(tuple, offset)| Ok((Expression::Tuple(tuple), offset)))
+                .map(|(tuple, offset)| (Expression::Tuple(tuple), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| {
             try_parse_map(code, tokens, offset)
-                .and_then(|(map, offset)| Ok((Expression::Map(map), offset)))
+                .map(|(map, offset)| (Expression::Map(map), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| try_parse_unary_operator(code, tokens, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_attribute_reference(code, tokens, offset)
-                .and_then(|(attribute, offset)| Ok((Expression::AttributeRef(attribute), offset)))
+                .map(|(attribute, offset)| (Expression::AttributeRef(attribute), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| try_parse_binary_operator(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_range(code, tokens, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_struct(code, tokens, offset)
-                .and_then(|(s, offset)| Ok((Expression::Struct(s), offset)))
+                .map(|(s, offset)| (Expression::Struct(s), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| {
             try_parse_identifier(code, tokens, offset)
-                .and_then(|(identifier, offset)| Ok((Expression::Identifier(identifier), offset)))
+                .map(|(identifier, offset)| (Expression::Identifier(identifier), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| {
             try_parse_integer(code, tokens, offset)
-                .and_then(|(integer, offset)| Ok((Expression::Integer(integer), offset)))
+                .map(|(integer, offset)| (Expression::Integer(integer), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| {
             try_parse_attribute_definition(code, tokens, offset)
-                .and_then(|(attribute, offset)| Ok((Expression::AttributeDef(attribute), offset)))
+                .map(|(attribute, offset)| (Expression::AttributeDef(attribute), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| {
@@ -2071,7 +2017,7 @@ fn try_parse_expression<'a>(
             // and look at the logs
             // dbg!(&err);
             try_parse_float(code, tokens, offset)
-                .and_then(|(float, offset)| Ok((Expression::Float(float), offset)))
+                .map(|(float, offset)| (Expression::Float(float), offset))
                 .map_err(|_| err)
         })
 }
@@ -2081,8 +2027,8 @@ fn try_parse_unary_operator(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "unary_operator")?;
-    let (operator, offset) = try_parse_unary_operator_node(code, tokens, offset)?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "unary_operator")?;
+    let (operator, offset) = try_parse_unary_operator_node(tokens, offset)?;
     let (operand, offset) = try_parse_expression(code, tokens, offset)?;
     let operation = Expression::UnaryOperation(UnaryOperation {
         operator,
@@ -2096,9 +2042,9 @@ fn try_parse_binary_operator(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
     let (left, offset) = try_parse_expression(code, tokens, offset)?;
-    let (operator, offset) = try_parse_binary_operator_node(code, tokens, offset)?;
+    let (operator, offset) = try_parse_binary_operator_node(tokens, offset)?;
     let (right, offset) = try_parse_expression(code, tokens, offset)?;
     let operation = Expression::BinaryOperation(BinaryOperation {
         operator,
@@ -2113,15 +2059,15 @@ fn try_parse_if_expression(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, "if")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
     let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
     let list = extract_list(do_block_kw);
     let do_block = keyword_fetch(&list, atom!("do")).unwrap();
-    let else_block = keyword_fetch(&list, atom!("else")).map(|else_block| Box::new(else_block));
+    let else_block = keyword_fetch(&list, atom!("else")).map(Box::new);
 
     let if_expr = Expression::If(ConditionalExpression {
         condition_expression: Box::new(condition_expression),
@@ -2137,15 +2083,15 @@ fn try_parse_unless_expression(
     tokens: &Vec<Node>,
     offset: u64,
 ) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, "unless")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
     let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
     let list = extract_list(do_block_kw);
     let do_block = keyword_fetch(&list, atom!("do")).unwrap();
-    let else_block = keyword_fetch(&list, atom!("else")).map(|else_block| Box::new(else_block));
+    let else_block = keyword_fetch(&list, atom!("else")).map(Box::new);
 
     let unless_expr = Expression::Unless(ConditionalExpression {
         condition_expression: Box::new(condition_expression),
@@ -2211,10 +2157,10 @@ fn try_parse_use(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Ex
 }
 
 fn try_parse_dot_access(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "dot")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "dot")?;
     let (body, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, ".")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, ".")?;
     let (identifier, offset) = try_parse_identifier(code, tokens, offset)?;
 
     let dot_access = Expression::DotAccess(DotAccess {
@@ -2244,9 +2190,9 @@ fn try_parse_module_operator(
     offset: u64,
     target: &str,
 ) -> ParserResult<(Atom, Option<List>)> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (_, offset) = try_parse_keyword(code, tokens, offset, target)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "arguments")?;
     let (target_module, offset) = try_parse_module_name(code, tokens, offset)?;
 
     let (options, offset) =
@@ -2255,7 +2201,7 @@ fn try_parse_module_operator(
         if offset == tokens.len() as u64 {
             (None, offset)
         } else {
-            match try_parse_grammar_name(code, tokens, offset, ",") {
+            match try_parse_grammar_name(tokens, offset, ",") {
                 Ok((_, offset)) => {
                     let (options, offset) = try_parse_keyword_expressions(code, tokens, offset)?;
                     (Some(options), offset)
@@ -2267,11 +2213,7 @@ fn try_parse_module_operator(
     Ok(((target_module, options), offset))
 }
 
-fn try_parse_unary_operator_node(
-    code: &str,
-    tokens: &Vec<Node>,
-    offset: u64,
-) -> ParserResult<UnaryOperator> {
+fn try_parse_unary_operator_node(tokens: &[Node], offset: u64) -> ParserResult<UnaryOperator> {
     let token = tokens[offset as usize];
     let operator = token.grammar_name();
     match operator {
@@ -2280,18 +2222,12 @@ fn try_parse_unary_operator_node(
         "!" => Ok((UnaryOperator::RelaxedNot, offset + 1)),
         "not" => Ok((UnaryOperator::StrictNot, offset + 1)),
         "^" => Ok((UnaryOperator::Pin, offset + 1)),
-        _ => Err(build_unexpected_token_error(
-            code,
-            offset,
-            "unary_operator",
-            &token,
-        )),
+        _ => Err(build_unexpected_token_error(offset, &token)),
     }
 }
 
 fn try_parse_binary_operator_node(
-    code: &str,
-    tokens: &Vec<Node>,
+    tokens: &[Node],
     offset: u64,
 ) -> ParserResult<BinaryOperator> {
     let token = tokens[offset as usize];
@@ -2321,25 +2257,25 @@ fn try_parse_binary_operator_node(
         ">" => Ok((BinaryOperator::GreaterThan, offset + 1)),
         "<=" => Ok((BinaryOperator::LessThanOrEqual, offset + 1)),
         ">=" => Ok((BinaryOperator::GreaterThanOrEqual, offset + 1)),
-        unknown_operator => try_parse_custom_operator(code, &token, offset, unknown_operator)
-            .and_then(|op| Ok((BinaryOperator::Custom(op), offset + 1))),
+        unknown_operator => try_parse_custom_operator(&token, offset, unknown_operator)
+            .map(|op| (BinaryOperator::Custom(op), offset + 1)),
     }
 }
 
 fn try_parse_range(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "binary_operator")?;
 
-    let (offset, has_step) = match try_parse_grammar_name(code, tokens, offset, "binary_operator") {
+    let (offset, has_step) = match try_parse_grammar_name(tokens, offset, "binary_operator") {
         Ok((_, offset)) => (offset, true),
         Err(_) => (offset, false),
     };
 
     let (start, offset) = try_parse_expression(code, tokens, offset)?;
-    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "..")?;
+    let (_, offset) = try_parse_grammar_name(tokens, offset, "..")?;
     let (end, offset) = try_parse_expression(code, tokens, offset)?;
 
     let (step, offset) = if has_step {
-        let (_, offset) = try_parse_grammar_name(code, tokens, offset, "//")?;
+        let (_, offset) = try_parse_grammar_name(tokens, offset, "//")?;
         let (step, offset) = try_parse_expression(code, tokens, offset)?;
         (Some(Box::new(step)), offset)
     } else {
@@ -2356,36 +2292,24 @@ fn try_parse_range(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<
 }
 
 fn try_parse_custom_operator(
-    code: &str,
     token: &Node,
     offset: u64,
     operator_string: &str,
 ) -> Result<String, ParseError> {
-    let custom_operators = vec![
+    let custom_operators = [
         "&&&", "<<<", ">>>", "<<~", "~>>", "<~", "~>", "<~>", "+++", "---",
     ];
 
     if custom_operators.contains(&operator_string) {
         Ok(operator_string.to_string())
     } else {
-        Err(build_unexpected_token_error(
-            code,
-            offset,
-            "binary_operator",
-            &token,
-        ))
+        Err(build_unexpected_token_error(offset, token))
     }
 }
 
-fn build_unexpected_token_error(
-    code: &str,
-    offset: u64,
-    _expected: &str,
-    actual_token: &Node,
-) -> ParseError {
+fn build_unexpected_token_error(offset: u64, actual_token: &Node) -> ParseError {
     let start = actual_token.start_position();
     let end = actual_token.end_position();
-    let content = extract_node_text(code, actual_token);
 
     ParseError {
         offset,
@@ -2421,30 +2345,6 @@ fn build_unexpected_keyword_error(offset: u64, actual_token: &Node) -> ParseErro
     }
 }
 
-// TODO: implement parse_between, expects to parse everything correctly between two delimiiter parsers
-// replace this one with it
-fn parse_between<'a, T: Debug, S, E: Debug>(
-    code: &'a str,
-    tokens: &'a Vec<Node>,
-    offset: u64,
-    start_parser: Parser<'a, S>,
-    parser: Parser<'a, T>,
-    end_parser: Parser<'a, E>,
-) -> ParserResult<Option<T>> {
-    let (_, offset) = start_parser(code, tokens, offset)?;
-
-    // handle empty between delimiters
-    match end_parser(code, tokens, offset) {
-        Ok((_, offset)) => return Ok((None, offset)),
-        Err(_) => {}
-    };
-
-    let (expression, offset) = parser(code, tokens, offset)?;
-    let (_, offset) = end_parser(code, tokens, offset)?;
-
-    Ok((Some(expression), offset))
-}
-
 fn parse_until<'a, T: Debug, E>(
     code: &'a str,
     tokens: &'a Vec<Node>,
@@ -2475,7 +2375,7 @@ fn parse_all_tokens<'a, T: Debug>(
     offset: u64,
     parser: Parser<'a, T>,
 ) -> ParserResult<Vec<T>> {
-    if tokens.len() == 0 {
+    if tokens.is_empty() {
         return Ok((vec![], 0));
     }
 
@@ -2583,6 +2483,17 @@ macro_rules! list_cons {
         Expression::List(List {
             items: $items,
             cons: $cons,
+        })
+    };
+}
+
+#[macro_export]
+macro_rules! call {
+    ( $target:expr, $( $arg:expr ),* ) => {
+        Expression::Call(Call {
+            target: Box::new($target),
+            remote_callee: None,
+            arguments: vec![$($arg,)*]
         })
     };
 }
@@ -2714,12 +2625,7 @@ mod tests {
     fn parse_local_call() {
         let code = "to_integer(a)";
         let result = parse(&code).unwrap();
-
-        let target = Block(vec![Expression::Call(Call {
-            target: Box::new(id!("to_integer")),
-            remote_callee: None,
-            arguments: vec![id!("a")],
-        })]);
+        let target = Block(vec![call!(id!("to_integer"), id!("a"))]);
 
         assert_eq!(result, target);
     }
@@ -2728,12 +2634,7 @@ mod tests {
     fn parse_call_no_parenthesis() {
         let code = "to_integer a";
         let result = parse(&code).unwrap();
-
-        let target = Block(vec![Expression::Call(Call {
-            target: Box::new(id!("to_integer")),
-            remote_callee: None,
-            arguments: vec![id!("a")],
-        })]);
+        let target = Block(vec![call!(id!("to_integer"), id!("a"))]);
 
         assert_eq!(result, target);
     }
@@ -2743,11 +2644,10 @@ mod tests {
         let code = "my_function(keywords: :only)";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Call(Call {
-            target: Box::new(id!("my_function")),
-            remote_callee: None,
-            arguments: vec![list!(tuple!(atom!("keywords"), atom!("only")))],
-        })]);
+        let target = Block(vec![call!(
+            id!("my_function"),
+            list!(tuple!(atom!("keywords"), atom!("only")))
+        )]);
 
         assert_eq!(result, target);
     }
@@ -2788,11 +2688,12 @@ mod tests {
         let code = "to_integer a, 10, 30.2";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Call(Call {
-            target: Box::new(id!("to_integer")),
-            remote_callee: None,
-            arguments: vec![id!("a"), int!(10), float!(30.2)],
-        })]);
+        let target = Block(vec![call!(
+            id!("to_integer"),
+            id!("a"),
+            int!(10),
+            float!(30.2)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3108,11 +3009,7 @@ mod tests {
                 default: None,
             }],
             body: Box::new(binary_operation!(id!("a"), BinaryOperator::Equal, int!(10))),
-            guard_expression: Some(Box::new(Expression::Call(Call {
-                target: Box::new(id!("is_integer")),
-                remote_callee: None,
-                arguments: vec![id!("a")],
-            }))),
+            guard_expression: Some(Box::new(call!(id!("is_integer"), id!("a")))),
         })]);
 
         assert_eq!(result, target);
@@ -4313,7 +4210,7 @@ mod tests {
     fn parse_capture_expression_grouped() {
         let code = "&(&1 * &2)";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::CaptureExpression(Box::new(
+        let target = Block(vec![Expression::Capture(Box::new(
             binary_operation!(id!("&1"), BinaryOperator::Mult, id!("&2")),
         ))]);
 
@@ -4324,7 +4221,7 @@ mod tests {
     fn parse_capture_expression_ungrouped() {
         let code = "& &1 + &2";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::CaptureExpression(Box::new(
+        let target = Block(vec![Expression::Capture(Box::new(
             binary_operation!(id!("&1"), BinaryOperator::Plus, id!("&2")),
         ))]);
 
@@ -4499,11 +4396,7 @@ mod tests {
             clauses: vec![
                 LambdaClause {
                     arguments: vec![id!("a")],
-                    guard: Some(Box::new(Expression::Call(Call {
-                        target: Box::new(id!("is_integer")),
-                        remote_callee: None,
-                        arguments: vec![id!("a")],
-                    }))),
+                    guard: Some(Box::new(call!(id!("is_integer"), id!("a")))),
                     body: int!(10),
                 },
                 LambdaClause {
@@ -4732,11 +4625,8 @@ mod tests {
             name: Identifier("my_macro".to_string()),
             is_private: false,
             body: Box::new(bool!(true)),
-            guard_expression: Some(Box::new(Expression::Call(Call {
-                target: Box::new(id!("is_integer")),
-                remote_callee: None,
-                arguments: vec![id!("x")],
-            }))),
+            guard_expression: Some(Box::new(call!(id!("is_integer"), id!("x")))),
+
             parameters: vec![Parameter {
                 expression: Box::new(id!("x")),
                 default: None,
@@ -4864,23 +4754,15 @@ mod tests {
             field :name, :string
         end
         "#;
-        // call "schema" [do: (call field (:name, :string))]
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Call(Call {
-            target: Box::new(id!("schema")),
-            remote_callee: None,
-            arguments: vec![
-                string!("my_schema"),
-                list!(tuple!(
-                    atom!("do"),
-                    Expression::Call(Call {
-                        target: Box::new(id!("field")),
-                        remote_callee: None,
-                        arguments: vec![atom!("name"), atom!("string")]
-                    })
-                )),
-            ],
-        })]);
+        let target = Block(vec![call!(
+            id!("schema"),
+            string!("my_schema"),
+            list!(tuple!(
+                atom!("do"),
+                call!(id!("field"), atom!("name"), atom!("string"))
+            ))
+        )]);
 
         assert_eq!(result, target);
     }
@@ -4897,27 +4779,26 @@ mod tests {
         end
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Call(Call {
-            target: Box::new(id!("schema")),
-            remote_callee: None,
-            arguments: vec![
-                string!("my_schema"),
-                list!(
-                    tuple!(atom!("do"), int!(10)),
-                    tuple!(
-                        atom!("rescue"),
-                        Expression::Call(Call {
-                            target: Box::new(id!("field")),
-                            remote_callee: None,
-                            arguments: vec![atom!("name"), atom!("string")]
-                        })
-                    )
-                ),
-            ],
-        })]);
+        let target = Block(vec![call!(
+            id!("schema"),
+            string!("my_schema"),
+            list!(
+                tuple!(atom!("do"), int!(10)),
+                tuple!(
+                    atom!("rescue"),
+                    call!(id!("field"), atom!("name"), atom!("string"))
+                )
+            )
+        )]);
 
         assert_eq!(result, target);
     }
+
+    // TODO
+    // Test without any arguments
+    // schema do
+    //   10
+    // end
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
@@ -4932,6 +4813,7 @@ mod tests {
 // TODO: refactor how do-end are parsed and handled according to https://hexdocs.pm/elixir/syntax-reference.html#do-end-blocks
 //
 // TODO: parse typespecs
+// parse them as string content for now
 //
 // TODO: macro for call structure
 // TODO: separate remote from local calls in the Expression enum?
