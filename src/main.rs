@@ -427,6 +427,7 @@ fn walkdir(path: &str) {
     }
 
     use rayon::prelude::*;
+
     let results = file_paths
         .par_iter()
         .map(|path| (path, parse_file(path)))
@@ -1716,6 +1717,7 @@ fn try_parse_float(
 ) -> Result<(Float, u64), ParseError> {
     let (float_node, offset) = try_parse_grammar_name(code, tokens, offset, "float")?;
     let float_text = extract_node_text(code, &float_node);
+    let float_text = float_text.replace("_", "");
 
     let f = float_text.parse::<f64>().unwrap();
     Ok((Float(f), offset))
@@ -2560,6 +2562,16 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Float(Float(34.39212))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_float_underscores() {
+        let code = "100_000.50_000";
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::Float(Float(100000.5))]);
 
         assert_eq!(result, target);
     }
