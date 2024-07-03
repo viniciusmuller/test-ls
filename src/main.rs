@@ -87,6 +87,30 @@ struct Quote {
     body: Box<Expression>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct PState<'a> {
+    code: String,
+    offset: usize,
+    expecting_do: bool,
+    tokens: Vec<Node<'a>>,
+}
+
+impl<'a> PState<'a> {
+    fn init(code: &'a str, tokens: Vec<Node<'a>>) -> PState<'a> {
+        PState {
+            tokens,
+            code: code.to_owned(),
+            offset: 0,
+            expecting_do: false,
+        }
+    }
+
+    fn parse(&mut self) -> ParserResult<Expression> {
+        parse_all_tokens(&self.code, &self.tokens, 0, try_parse_expression)
+            .map(|(expressions, offset)| (Expression::Block(expressions), offset))
+    }
+}
+
 type ParserResult<T> = Result<(T, u64), ParseError>;
 type Parser<'a, T> = fn(&'a str, &'a Vec<Node<'a>>, u64) -> ParserResult<T>;
 
@@ -472,9 +496,10 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
 
     let tokens = nodes.clone();
 
-    let (result, _) = parse_all_tokens(code, &tokens, 0, try_parse_expression)?;
+    let mut parser = PState::init(code, tokens);
+    let (result, offset) = parser.parse()?;
 
-    Ok(Expression::Block(result))
+    Ok(result)
 }
 
 fn flatten_node_children<'a>(node: Node<'a>, vec: &mut Vec<Node<'a>>) {
@@ -742,6 +767,7 @@ fn try_parse_function_definition(
     if let Ok(((guard_expr, parameters, function_name), offset)) =
         try_parse_function_guard(code, tokens, offset)
     {
+        dbg!(&guard_expr, offset);
         let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
         let list = extract_list(do_block_kw);
         let do_block = keyword_fetch(&list, atom!("do")).unwrap();
@@ -902,6 +928,8 @@ fn try_parse_function_guard(
 
     let (_, offset) = try_parse_grammar_name(tokens, offset, "when")?;
     let (guard_expression, offset) = try_parse_expression(code, tokens, offset)?;
+
+    dbg!(&guard_expression);
 
     let comma_parser = |_, tokens, offset| try_parse_grammar_name(tokens, offset, ",");
     let offset = try_consume(code, tokens, offset, comma_parser);
@@ -1068,10 +1096,15 @@ fn try_parse_remote_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserR
     Ok((call, offset))
 }
 
+// TODO: introduce Parser struct
+
+// TODO: unify with try_parse_remote_call
 fn try_parse_local_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(tokens, offset, "call")?;
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
-    let (mut arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
+
+    let (mut arguments, offset) =
+        try_parse_call_arguments(code, tokens, offset).unwrap_or((vec![], offset));
 
     let (do_block, offset) = try_parse_do_block(code, tokens, offset)
         .map(|(block, offset)| (Some(block), offset))
@@ -2226,10 +2259,7 @@ fn try_parse_unary_operator_node(tokens: &[Node], offset: u64) -> ParserResult<U
     }
 }
 
-fn try_parse_binary_operator_node(
-    tokens: &[Node],
-    offset: u64,
-) -> ParserResult<BinaryOperator> {
+fn try_parse_binary_operator_node(tokens: &[Node], offset: u64) -> ParserResult<BinaryOperator> {
     let token = tokens[offset as usize];
     let operator = token.grammar_name();
     match operator {
@@ -4210,9 +4240,11 @@ mod tests {
     fn parse_capture_expression_grouped() {
         let code = "&(&1 * &2)";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Capture(Box::new(
-            binary_operation!(id!("&1"), BinaryOperator::Mult, id!("&2")),
-        ))]);
+        let target = Block(vec![Expression::Capture(Box::new(binary_operation!(
+            id!("&1"),
+            BinaryOperator::Mult,
+            id!("&2")
+        )))]);
 
         assert_eq!(result, target);
     }
@@ -4221,9 +4253,11 @@ mod tests {
     fn parse_capture_expression_ungrouped() {
         let code = "& &1 + &2";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Capture(Box::new(
-            binary_operation!(id!("&1"), BinaryOperator::Plus, id!("&2")),
-        ))]);
+        let target = Block(vec![Expression::Capture(Box::new(binary_operation!(
+            id!("&1"),
+            BinaryOperator::Plus,
+            id!("&2")
+        )))]);
 
         assert_eq!(result, target);
     }
@@ -4794,11 +4828,21 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO
-    // Test without any arguments
-    // schema do
-    //   10
-    // end
+    #[test]
+    fn parse_custom_block_expressions_no_args() {
+        let code = r#"
+        my_op do
+            10
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![call!(
+            id!("my_op"),
+            list!(tuple!(atom!("do"), int!(10)))
+        )]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
