@@ -5,24 +5,24 @@ use std::{env, ffi::OsStr, fs, io, path::Path};
 use tree_sitter::{Node, Tree};
 use walkdir::{DirEntry, WalkDir};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Identifier(String);
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 struct Float(f64);
 
 impl Eq for Float {}
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Atom(String);
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Parameter {
     expression: Box<Expression>,
     default: Option<Box<Expression>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Function {
     name: Identifier,
     is_private: bool,
@@ -31,7 +31,7 @@ struct Function {
     parameters: Vec<Parameter>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Macro {
     name: Identifier,
     is_private: bool,
@@ -40,48 +40,48 @@ struct Macro {
     parameters: Vec<Parameter>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Module {
     name: Atom,
     body: Box<Expression>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct List {
     items: Vec<Expression>,
     cons: Option<Box<Expression>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Tuple {
     items: Vec<Expression>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Map {
     entries: Vec<(Expression, Expression)>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Struct {
     name: Atom,
     entries: Vec<(Expression, Expression)>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Attribute {
     name: Identifier,
     value: Box<Expression>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Call {
     target: Box<Expression>,
     remote_callee: Option<Box<Expression>>,
     arguments: Vec<Expression>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Quote {
     options: Option<List>,
     body: Box<Expression>,
@@ -94,7 +94,7 @@ type Parser<'a, T> = fn(&'a str, &'a Vec<Node<'a>>, u64) -> ParserResult<T>;
 ///
 /// Since range can actually have 3 operands if taking the step into account, we don't treat
 /// it as a binary operator.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum BinaryOperator {
     /// +
     Plus,
@@ -158,14 +158,14 @@ enum BinaryOperator {
     Custom(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Range {
     start: Box<Expression>,
     end: Box<Expression>,
     step: Option<Box<Expression>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct BinaryOperation {
     operator: BinaryOperator,
     left: Box<Expression>,
@@ -173,7 +173,7 @@ struct BinaryOperation {
 }
 
 /// Check https://hexdocs.pm/elixir/1.17.1/operators.html for more info
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum UnaryOperator {
     /// not
     StrictNot,
@@ -187,116 +187,116 @@ enum UnaryOperator {
     Pin,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct UnaryOperation {
     operator: UnaryOperator,
     operand: Box<Expression>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct ConditionalExpression {
     condition_expression: Box<Expression>,
     do_expression: Box<Expression>,
     else_expression: Option<Box<Expression>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct CaseExpression {
     target_expression: Box<Expression>,
     arms: Vec<CaseArm>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct CondExpression {
     arms: Vec<CondArm>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct CondArm {
     condition: Box<Expression>,
     body: Box<Expression>,
 }
 
 // TODO: try to generalize this "stab" AST structure
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct CaseArm {
     left: Box<Expression>,
     body: Box<Expression>,
     guard_expr: Option<Box<Expression>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Require {
     target: Atom,
     options: Option<List>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Access {
     target: Box<Expression>,
     access_expression: Box<Expression>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct DotAccess {
     body: Box<Expression>,
     key: Identifier,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Alias {
     target: Atom,
     // TODO: maybe make empty list by default instead of None
     options: Option<List>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Use {
     target: Atom,
     // TODO: maybe make empty list by default instead of None
     options: Option<List>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Import {
     target: Atom,
     // TODO: maybe make empty list by default instead of None
     options: Option<List>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum FunctionCaptureRemoteCallee {
     Variable(Identifier),
     Module(Atom),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct FunctionCapture {
     arity: usize,
     callee: Identifier,
     remote_callee: Option<FunctionCaptureRemoteCallee>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct LambdaClause {
     arguments: Vec<Expression>,
     guard: Option<Box<Expression>>,
     body: Expression,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Lambda {
     clauses: Vec<LambdaClause>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Sigil {
     name: String,
     content: String,
     modifier: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum Expression {
     Bool(bool),
     Nil,
@@ -501,7 +501,9 @@ fn try_parse_module(
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (module_name, offset) = try_parse_module_name(code, tokens, offset)?;
 
-    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+    let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+    let list = extract_list(do_block_kw);
+    let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
     let module = Expression::Module(Module {
         name: module_name,
@@ -601,6 +603,7 @@ fn try_parse_local_function_capture(
 }
 
 fn try_parse_quote(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    // TODO: try_pares_do_block with oneline support should do the trick here for both cases
     try_parse_quote_oneline(code, tokens, offset)
         .or_else(|_| try_parse_quote_block(code, tokens, offset))
 }
@@ -618,11 +621,13 @@ fn try_parse_quote_block(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserR
         .map(|(opts, offset)| (Some(opts), offset))
         .unwrap_or((None, offset));
 
-    let (block, offset) = try_parse_do_block(code, tokens, offset)?;
+    let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+    let list = extract_list(do_block_kw);
+    let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
     let capture = Expression::Quote(Quote {
         options,
-        body: Box::new(block),
+        body: Box::new(do_block),
     });
 
     Ok((capture, offset))
@@ -739,8 +744,10 @@ fn try_parse_function_definition(
 
     match try_parse_function_guard(code, tokens, offset) {
         Ok(((guard_expr, parameters, function_name), offset)) => {
-            let (do_block, offset) = try_parse_do_block(code, tokens, offset)
-                .or_else(|_| try_parse_do_keyword(code, tokens, offset))?;
+            dbg!(&guard_expr, offset);
+            let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+            let list = extract_list(do_block_kw);
+            let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
             let function = Expression::FunctionDef(Function {
                 name: function_name,
@@ -757,10 +764,8 @@ fn try_parse_function_definition(
 
     let (function_name, offset) = try_parse_identifier(code, tokens, offset)?;
 
-    let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
-        Ok(result) => result,
-        Err(_) => (vec![], offset),
-    };
+    let (parameters, offset) =
+        try_parse_parameters(code, tokens, offset).unwrap_or((vec![], offset));
 
     let (is_keyword_form, offset) = try_parse_grammar_name(code, tokens, offset, ",")
         .map(|(_, offset)| ((true, offset)))
@@ -770,9 +775,12 @@ fn try_parse_function_definition(
         let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)
             .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))?;
         let first_pair = keywords.remove(0);
+        // TODO: refactor this branch
         (first_pair.1, offset)
     } else {
-        let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+        let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+        let list = extract_list(do_block_kw);
+        let do_block = keyword_fetch(&list, atom!("do")).unwrap();
         (do_block, offset)
     };
 
@@ -835,8 +843,9 @@ fn try_parse_macro_definition(
 
     match try_parse_function_guard(code, tokens, offset) {
         Ok(((guard_expr, parameters, macro_name), offset)) => {
-            let (do_block, offset) = try_parse_do_block(code, tokens, offset)
-                .or_else(|_| try_parse_do_keyword(code, tokens, offset))?;
+            let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+            let list = extract_list(do_block_kw);
+            let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
             let macro_def = Expression::MacroDef(Macro {
                 name: macro_name,
@@ -853,10 +862,8 @@ fn try_parse_macro_definition(
 
     let (macro_name, offset) = try_parse_identifier(code, tokens, offset)?;
 
-    let (parameters, offset) = match try_parse_parameters(code, tokens, offset) {
-        Ok(result) => result,
-        Err(_) => (vec![], offset),
-    };
+    let (parameters, offset) =
+        try_parse_parameters(code, tokens, offset).unwrap_or((vec![], offset));
 
     let (is_keyword_form, offset) = try_parse_grammar_name(code, tokens, offset, ",")
         .map(|(_, offset)| ((true, offset)))
@@ -868,11 +875,13 @@ fn try_parse_macro_definition(
         let first_pair = keywords.remove(0);
         (first_pair.1, offset)
     } else {
-        let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+        let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+        let list = extract_list(do_block_kw);
+        let do_block = keyword_fetch(&list, atom!("do")).unwrap();
         (do_block, offset)
     };
 
-    let function = Expression::MacroDef(Macro {
+    let macro_def = Expression::MacroDef(Macro {
         name: macro_name,
         body: Box::new(do_block),
         guard_expression: None,
@@ -880,7 +889,7 @@ fn try_parse_macro_definition(
         is_private,
     });
 
-    Ok((function, offset))
+    Ok((macro_def, offset))
 }
 
 fn try_parse_function_guard(
@@ -926,7 +935,7 @@ fn try_parse_parameters(
         };
 
     let offset = if has_parenthesis {
-        let (_node, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
+        let (_, new_offset) = try_parse_grammar_name(code, tokens, offset, ")")?;
         new_offset
     } else {
         offset
@@ -1058,16 +1067,13 @@ fn try_parse_remote_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserR
     let (remote_callee, offset) = try_parse_expression(code, tokens, offset)?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, ".")?;
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
-    let (arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
+    let (mut arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
 
     let (do_block, offset) = try_parse_do_block(code, tokens, offset)
-        .map(|(block, offset)| {
-            dbg!(&block);
-            (Some(block), offset)
-        })
+        .map(|(block, offset)| (Some(block), offset))
         .unwrap_or((None, offset));
 
-    dbg!(do_block);
+    arguments.extend(do_block);
 
     let call = Expression::Call(Call {
         target: Box::new(Expression::Identifier(local_callee)),
@@ -1081,16 +1087,13 @@ fn try_parse_remote_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserR
 fn try_parse_local_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
-    let (arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
+    let (mut arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
 
     let (do_block, offset) = try_parse_do_block(code, tokens, offset)
-        .map(|(block, offset)| {
-            dbg!(&block);
-            (Some(block), offset)
-        })
+        .map(|(block, offset)| (Some(block), offset))
         .unwrap_or((None, offset));
 
-    dbg!(do_block);
+    arguments.extend(do_block);
 
     let call = Expression::Call(Call {
         target: Box::new(Expression::Identifier(local_callee)),
@@ -1150,7 +1153,8 @@ fn try_parse_keyword_expressions(
 ) -> ParserResult<List> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "keywords")?;
     let sep_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, ",");
-    try_parse_sep_by(code, tokens, offset, try_parse_keyword_pair, sep_parser).and_then(
+
+    try_parse_sep_by(code, tokens, offset, try_parse_keyword_pair, sep_parser).map(
         |(pairs, offset)| {
             let tuples = pairs
                 .into_iter()
@@ -1166,7 +1170,7 @@ fn try_parse_keyword_expressions(
                 cons: None,
             };
 
-            Ok((list, offset))
+            (list, offset)
         },
     )
 }
@@ -1527,6 +1531,9 @@ fn try_parse_case_arm_guard(
     Ok(((left, body, guard_expression), offset))
 }
 
+// TODO: make another version of parse_do_block that has the same core logic but work specifically
+// for keyword syntax
+
 /// Parses a sugarized do block and returns a desugarized keyword structure
 fn try_parse_do_block<'a>(
     code: &str,
@@ -1536,64 +1543,89 @@ fn try_parse_do_block<'a>(
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do")?;
 
-    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
+    // TODO: do a bit of cleanup on this parser
+    let block_end_parser = |code, tokens, offset| {
+        try_parse_grammar_name(code, tokens, offset, "end")
+            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "else_block"))
+            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "after_block"))
+            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "rescue_block"))
+            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "catch_block"))
+    };
 
-    let (body, offset) = parse_until(code, tokens, offset, try_parse_expression, end_parser)
-        .unwrap_or((vec![], offset));
+    let optional_block_end_parser =
+        |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
 
-    let list = list!(tuple!(atom!("do"), Expression::Block(body)));
-    Ok((list, offset))
+    let (mut body, offset) =
+        parse_until(code, tokens, offset, try_parse_expression, block_end_parser)
+            .unwrap_or((vec![], offset));
 
-    // let block_body_parser = |code, tokens, offset| {
-    //     let end_parser = |code, tokens, offset| {
-    //         try_parse_grammar_name(code, tokens, offset, "end")
-    //             .or_else(|_| try_parse_grammar_name(code, tokens, offset, "else_block"))
-    //     };
+    let optional_block_parser = |code, tokens, offset| {
+        try_parse_grammar_name(code, tokens, offset, "else")
+            .map(|(_, offset)| (atom!("else"), offset))
+            .or_else(|_| {
+                try_parse_grammar_name(code, tokens, offset, "after")
+                    .map(|(_, offset)| (atom!("after"), offset))
+            })
+            .or_else(|_| {
+                try_parse_grammar_name(code, tokens, offset, "rescue")
+                    .map(|(_, offset)| (atom!("rescue"), offset))
+            })
+            .or_else(|_| {
+                try_parse_grammar_name(code, tokens, offset, "catch")
+                    .map(|(_, offset)| (atom!("catch"), offset))
+            })
+    };
 
-    //     let (body, offset) = parse_until(code, tokens, offset, try_parse_expression, end_parser)
-    //         .unwrap_or((vec![], offset));
+    let optional_block_start_parser = |code, tokens, offset| {
+        try_parse_grammar_name(code, tokens, offset, "else_block")
+            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "after_block"))
+            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "rescue_block"))
+            .or_else(|_| try_parse_grammar_name(code, tokens, offset, "catch_block"))
+    };
 
-    //     // TODO: support any custom block here, not only elses
-    //     // make caller specify which block it's expecting to be available inside the do block
-    //     // let (else_block, offset) = try_parse_grammar_name(code, tokens, offset, "else_block")
-    //     //     .and_then(|(_, offset)| {
-    //     //         let (_, offset) = try_parse_grammar_name(code, tokens, offset, "else")?;
+    let (optional_block, optional_block_atom, offset) =
+        optional_block_start_parser(code, tokens, offset)
+            .and_then(|(_, offset)| {
+                let (atom, offset) = optional_block_parser(code, tokens, offset)?;
 
-    //     //         let (else_block, offset) =
-    //     //             parse_until(code, tokens, offset, try_parse_expression, end_parser)?;
+                let (else_block, offset) = parse_until(
+                    code,
+                    tokens,
+                    offset,
+                    try_parse_expression,
+                    optional_block_end_parser,
+                )?;
 
-    //     //         Ok((Some(else_block), offset))
-    //     //     })
-    //     //     .unwrap_or((None, offset));
+                Ok((Some(else_block), Some(atom), offset))
+            })
+            .unwrap_or((None, None, offset));
 
-    //     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
 
-    //     let keyword = Keyword {
-    //         pairs: vec![(
-    //             Expression::Atom(Atom("do".to_string())),
-    //             Expression::Block(body),
-    //         )],
-    //     };
+    // TODO: move to a helper function
+    let body = if body.len() == 1 {
+        body.pop().unwrap()
+    } else {
+        Expression::Block(body)
+    };
 
-    //     Ok((body, offset))
-    // };
+    let mut base_list = List {
+        items: vec![tuple!(atom!("do"), body)],
+        cons: None,
+    };
 
-    // let ((mut expressions, optional_block), offset) = block_body_parser(code, tokens, offset)?;
-    // let optional_block = optional_block.map(|mut block| {
-    //     if block.len() == 1 {
-    //         block.pop().unwrap()
-    //     } else {
-    //         Expression::Block(block)
-    //     }
-    // });
+    if let Some(mut block) = optional_block {
+        let block = if block.len() == 1 {
+            block.pop().unwrap()
+        } else {
+            Expression::Block(block)
+        };
 
-    // let expression = if expressions.len() == 1 {
-    //     expressions.pop().unwrap()
-    // } else {
-    //     Expression::Block(expressions)
-    // };
+        let block_atom = optional_block_atom.unwrap();
+        base_list.items.push(tuple!(block_atom, block));
+    }
 
-    // Ok(((expression, optional_block), offset))
+    Ok((Expression::List(base_list), offset))
 }
 
 fn try_parse_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -1956,7 +1988,6 @@ fn try_parse_expression<'a>(
     try_parse_module(code, tokens, offset)
         .or_else(|err| try_parse_grouping(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_call(code, tokens, offset).map_err(|_| err))
-        .or_else(|err| try_parse_do_block(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_dot_access(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_function_definition(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_macro_definition(code, tokens, offset).map_err(|_| err))
@@ -2087,13 +2118,15 @@ fn try_parse_if_expression(
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
-    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+    let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+    let list = extract_list(do_block_kw);
+    let do_block = keyword_fetch(&list, atom!("do")).unwrap();
+    let else_block = keyword_fetch(&list, atom!("else")).map(|else_block| Box::new(else_block));
 
     let if_expr = Expression::If(ConditionalExpression {
         condition_expression: Box::new(condition_expression),
         do_expression: Box::new(do_block),
-        // TODO: add back
-        else_expression: None,
+        else_expression: else_block,
     });
 
     Ok((if_expr, offset))
@@ -2109,16 +2142,37 @@ fn try_parse_unless_expression(
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
-    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
+    let (do_block_kw, offset) = try_parse_do_block(code, tokens, offset)?;
+    let list = extract_list(do_block_kw);
+    let do_block = keyword_fetch(&list, atom!("do")).unwrap();
+    let else_block = keyword_fetch(&list, atom!("else")).map(|else_block| Box::new(else_block));
 
     let unless_expr = Expression::Unless(ConditionalExpression {
         condition_expression: Box::new(condition_expression),
         do_expression: Box::new(do_block),
-        // TODO: add back
-        else_expression: None,
+        else_expression: else_block,
     });
 
     Ok((unless_expr, offset))
+}
+
+fn extract_list(list_expr: Expression) -> List {
+    match list_expr {
+        Expression::List(list) => list,
+        _ => panic!("was expecting list expression, got another expression"),
+    }
+}
+
+fn keyword_fetch(list: &List, target_key: Expression) -> Option<Expression> {
+    for item in &list.items {
+        if let Expression::Tuple(t) = item {
+            if t.items[0] == target_key {
+                return Some(t.items[1].clone());
+            }
+        }
+    }
+
+    None
 }
 
 fn try_parse_require(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -2487,6 +2541,13 @@ macro_rules! id {
 }
 
 #[macro_export]
+macro_rules! string {
+    ($x:expr) => {
+        Expression::String($x.to_string())
+    };
+}
+
+#[macro_export]
 macro_rules! binary_operation {
     ($left:expr, $operator:expr, $right:expr) => {
         Expression::BinaryOperation(BinaryOperation {
@@ -2647,7 +2708,6 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: test function call with keyword arguments
     // TODO: parse anonymous function call: foo.()
 
     #[test]
@@ -2988,7 +3048,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_function_definition() {
+    fn parse_function_no_params_no_parenthesis() {
         let code = "
         def func do
             priv_func()
@@ -4806,7 +4866,55 @@ mod tests {
         "#;
         // call "schema" [do: (call field (:name, :string))]
         let result = parse(&code).unwrap();
-        let target = Block(vec![]);
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(id!("schema")),
+            remote_callee: None,
+            arguments: vec![
+                string!("my_schema"),
+                list!(tuple!(
+                    atom!("do"),
+                    Expression::Call(Call {
+                        target: Box::new(id!("field")),
+                        remote_callee: None,
+                        arguments: vec![atom!("name"), atom!("string")]
+                    })
+                )),
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    // TODO: test parsing for each of the supported optional blocks
+
+    #[test]
+    fn parse_custom_block_expressions_optional_blocks() {
+        let code = r#"
+        schema "my_schema" do
+            10
+        rescue
+            field :name, :string
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(id!("schema")),
+            remote_callee: None,
+            arguments: vec![
+                string!("my_schema"),
+                list!(
+                    tuple!(atom!("do"), int!(10)),
+                    tuple!(
+                        atom!("rescue"),
+                        Expression::Call(Call {
+                            target: Box::new(id!("field")),
+                            remote_callee: None,
+                            arguments: vec![atom!("name"), atom!("string")]
+                        })
+                    )
+                ),
+            ],
+        })]);
 
         assert_eq!(result, target);
     }
@@ -4824,6 +4932,11 @@ mod tests {
 // TODO: refactor how do-end are parsed and handled according to https://hexdocs.pm/elixir/syntax-reference.html#do-end-blocks
 //
 // TODO: parse typespecs
+//
+// TODO: macro for call structure
+// TODO: separate remote from local calls in the Expression enum?
+
+// TODO: make existing try_parse_do_block support keyword notation as well
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
