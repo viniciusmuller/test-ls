@@ -504,7 +504,7 @@ fn try_parse_module(
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (module_name, offset) = try_parse_module_name(code, tokens, offset)?;
 
-    let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
 
     let module = Expression::Module(Module {
         name: module_name,
@@ -621,7 +621,7 @@ fn try_parse_quote_block(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserR
         .map(|(opts, offset)| (Some(opts), offset))
         .unwrap_or((None, offset));
 
-    let ((block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+    let (block, offset) = try_parse_do_block(code, tokens, offset)?;
 
     let capture = Expression::Quote(Quote {
         options,
@@ -727,7 +727,7 @@ fn try_parse_function_definition(
 
     match try_parse_function_guard(code, tokens, offset) {
         Ok(((guard_expr, parameters, function_name), offset)) => {
-            let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)
+            let (do_block, offset) = try_parse_do_block(code, tokens, offset)
                 .or_else(|_| try_parse_do_keyword(code, tokens, offset))?;
 
             let function = Expression::FunctionDef(Function {
@@ -759,7 +759,7 @@ fn try_parse_function_definition(
         let first_pair = keywords.pairs.remove(0);
         (first_pair.1, offset)
     } else {
-        let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+        let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
         (do_block, offset)
     };
 
@@ -774,24 +774,21 @@ fn try_parse_function_definition(
     Ok((function, offset))
 }
 
-fn try_parse_do_keyword(
-    code: &str,
-    tokens: &Vec<Node>,
-    offset: u64,
-) -> ParserResult<(Expression, Option<Expression>)> {
+fn try_parse_do_keyword(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (mut keywords, offset) = try_parse_keyword_expressions(code, tokens, offset)
         .or_else(|_| try_parse_keyword_list(code, tokens, offset))?;
 
     let do_atom = Atom("do".to_string());
 
     match keywords.pairs.pop() {
-        Some((Expression::Atom(atom), body)) => {
+        Some((Expression::Atom(atom), _body)) => {
             if atom == do_atom {
-                Ok(((body, None), offset))
+                Ok((Expression::KeywordList(keywords), offset))
             } else {
                 todo!()
             }
         }
+        // TODO: remove todo!() (probably this is unreachable)
         Some(_) | None => todo!(),
     }
 }
@@ -826,7 +823,7 @@ fn try_parse_macro_definition(
 
     match try_parse_function_guard(code, tokens, offset) {
         Ok(((guard_expr, parameters, macro_name), offset)) => {
-            let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)
+            let (do_block, offset) = try_parse_do_block(code, tokens, offset)
                 .or_else(|_| try_parse_do_keyword(code, tokens, offset))?;
 
             let macro_def = Expression::MacroDef(Macro {
@@ -858,7 +855,7 @@ fn try_parse_macro_definition(
         let first_pair = keywords.pairs.remove(0);
         (first_pair.1, offset)
     } else {
-        let ((do_block, _), offset) = try_parse_do_block(code, tokens, offset)?;
+        let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
         (do_block, offset)
     };
 
@@ -1050,6 +1047,15 @@ fn try_parse_remote_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserR
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
     let (arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
 
+    let (do_block, offset) = try_parse_do_block(code, tokens, offset)
+        .map(|(block, offset)| {
+            dbg!(&block);
+            (Some(block), offset)
+        })
+        .unwrap_or((None, offset));
+
+    dbg!(do_block);
+
     let call = Expression::Call(Call {
         target: Box::new(Expression::Identifier(local_callee)),
         remote_callee: Some(Box::new(remote_callee)),
@@ -1063,6 +1069,15 @@ fn try_parse_local_call(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserRe
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "call")?;
     let (local_callee, offset) = try_parse_identifier(code, tokens, offset)?;
     let (arguments, offset) = try_parse_call_arguments(code, tokens, offset)?;
+
+    let (do_block, offset) = try_parse_do_block(code, tokens, offset)
+        .map(|(block, offset)| {
+            dbg!(&block);
+            (Some(block), offset)
+        })
+        .unwrap_or((None, offset));
+
+    dbg!(do_block);
 
     let call = Expression::Call(Call {
         target: Box::new(Expression::Identifier(local_callee)),
@@ -1482,58 +1497,76 @@ fn try_parse_case_arm_guard(
     Ok(((left, body, guard_expression), offset))
 }
 
-// TODO: generalize do keyword structures
+/// Parses a sugarized do block and returns a desugarized keyword structure
 fn try_parse_do_block<'a>(
     code: &str,
     tokens: &Vec<Node<'a>>,
     offset: u64,
-) -> ParserResult<(Expression, Option<Expression>)> {
+) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do_block")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "do")?;
 
-    // TODO: update block to account for "stab" as in the language AST
-    let block_body_parser = |code, tokens, offset| {
-        let end_parser = |code, tokens, offset| {
-            try_parse_grammar_name(code, tokens, offset, "end")
-                .or_else(|_| try_parse_grammar_name(code, tokens, offset, "else_block"))
-        };
+    let end_parser = |code, tokens, offset| try_parse_grammar_name(code, tokens, offset, "end");
 
-        let (body, offset) = parse_until(code, tokens, offset, try_parse_expression, end_parser)
-            .unwrap_or((vec![], offset));
+    let (body, offset) = parse_until(code, tokens, offset, try_parse_expression, end_parser)
+        .unwrap_or((vec![], offset));
 
-        // TODO: support any custom block here, not only elses
-        // make caller specify which block it's expecting to be available inside the do block
-        let (else_block, offset) = try_parse_grammar_name(code, tokens, offset, "else_block")
-            .and_then(|(_, offset)| {
-                let (_, offset) = try_parse_grammar_name(code, tokens, offset, "else")?;
-
-                let (else_block, offset) =
-                    parse_until(code, tokens, offset, try_parse_expression, end_parser)?;
-
-                Ok((Some(else_block), offset))
-            })
-            .unwrap_or((None, offset));
-
-        let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
-        Ok(((body, else_block), offset))
+    let keyword = Keyword {
+        pairs: vec![(atom!("do"), Expression::Block(body))],
     };
 
-    let ((mut expressions, optional_block), offset) = block_body_parser(code, tokens, offset)?;
-    let optional_block = optional_block.map(|mut block| {
-        if block.len() == 1 {
-            block.pop().unwrap()
-        } else {
-            Expression::Block(block)
-        }
-    });
+    Ok((Expression::KeywordList(keyword), offset))
 
-    let expression = if expressions.len() == 1 {
-        expressions.pop().unwrap()
-    } else {
-        Expression::Block(expressions)
-    };
+    // let block_body_parser = |code, tokens, offset| {
+    //     let end_parser = |code, tokens, offset| {
+    //         try_parse_grammar_name(code, tokens, offset, "end")
+    //             .or_else(|_| try_parse_grammar_name(code, tokens, offset, "else_block"))
+    //     };
 
-    Ok(((expression, optional_block), offset))
+    //     let (body, offset) = parse_until(code, tokens, offset, try_parse_expression, end_parser)
+    //         .unwrap_or((vec![], offset));
+
+    //     // TODO: support any custom block here, not only elses
+    //     // make caller specify which block it's expecting to be available inside the do block
+    //     // let (else_block, offset) = try_parse_grammar_name(code, tokens, offset, "else_block")
+    //     //     .and_then(|(_, offset)| {
+    //     //         let (_, offset) = try_parse_grammar_name(code, tokens, offset, "else")?;
+
+    //     //         let (else_block, offset) =
+    //     //             parse_until(code, tokens, offset, try_parse_expression, end_parser)?;
+
+    //     //         Ok((Some(else_block), offset))
+    //     //     })
+    //     //     .unwrap_or((None, offset));
+
+    //     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "end")?;
+
+    //     let keyword = Keyword {
+    //         pairs: vec![(
+    //             Expression::Atom(Atom("do".to_string())),
+    //             Expression::Block(body),
+    //         )],
+    //     };
+
+    //     Ok((body, offset))
+    // };
+
+    // let ((mut expressions, optional_block), offset) = block_body_parser(code, tokens, offset)?;
+    // let optional_block = optional_block.map(|mut block| {
+    //     if block.len() == 1 {
+    //         block.pop().unwrap()
+    //     } else {
+    //         Expression::Block(block)
+    //     }
+    // });
+
+    // let expression = if expressions.len() == 1 {
+    //     expressions.pop().unwrap()
+    // } else {
+    //     Expression::Block(expressions)
+    // };
+
+    // Ok(((expression, optional_block), offset))
 }
 
 fn try_parse_atom(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
@@ -1879,6 +1912,7 @@ fn try_parse_expression<'a>(
     try_parse_module(code, tokens, offset)
         .or_else(|err| try_parse_grouping(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_call(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_do_block(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_dot_access(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_function_definition(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_macro_definition(code, tokens, offset).map_err(|_| err))
@@ -2009,12 +2043,13 @@ fn try_parse_if_expression(
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
-    let ((do_block, else_block), offset) = try_parse_do_block(code, tokens, offset)?;
+    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
 
     let if_expr = Expression::If(ConditionalExpression {
         condition_expression: Box::new(condition_expression),
         do_expression: Box::new(do_block),
-        else_expression: else_block.and_then(|block| Some(Box::new(block))),
+        // TODO: add back
+        else_expression: None,
     });
 
     Ok((if_expr, offset))
@@ -2030,12 +2065,13 @@ fn try_parse_unless_expression(
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(code, tokens, offset)?;
 
-    let ((do_block, else_block), offset) = try_parse_do_block(code, tokens, offset)?;
+    let (do_block, offset) = try_parse_do_block(code, tokens, offset)?;
 
     let unless_expr = Expression::Unless(ConditionalExpression {
         condition_expression: Box::new(condition_expression),
         do_expression: Box::new(do_block),
-        else_expression: else_block.and_then(|block| Some(Box::new(block))),
+        // TODO: add back
+        else_expression: None,
     });
 
     Ok((unless_expr, offset))
@@ -2364,6 +2400,59 @@ fn extract_node_text(code: &str, node: &Node) -> String {
     code[node.byte_range()].to_string()
 }
 
+#[macro_export]
+macro_rules! atom {
+    ($x:expr) => {
+        Expression::Atom(Atom($x.to_string()))
+    };
+}
+
+#[macro_export]
+macro_rules! nil {
+    () => {
+        Expression::Nil
+    };
+}
+
+#[macro_export]
+macro_rules! int {
+    ($x:expr) => {
+        Expression::Integer($x)
+    };
+}
+
+#[macro_export]
+macro_rules! float {
+    ($x:expr) => {
+        Expression::Float(Float($x))
+    };
+}
+
+#[macro_export]
+macro_rules! bool {
+    ($x:expr) => {
+        Expression::Bool($x)
+    };
+}
+
+#[macro_export]
+macro_rules! id {
+    ($x:expr) => {
+        Expression::Identifier(Identifier($x.to_string()))
+    };
+}
+
+#[macro_export]
+macro_rules! binary_operation {
+    ($left:expr, $operator:expr, $right:expr) => {
+        Expression::BinaryOperation(BinaryOperation {
+            operator: $operator,
+            left: Box::new($left),
+            right: Box::new($right),
+        })
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::Expression::Block;
@@ -2374,7 +2463,7 @@ mod tests {
         let code = ":atom";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Atom(Atom("atom".to_string()))]);
+        let target = Block(vec![atom!("atom")]);
 
         assert_eq!(result, target);
     }
@@ -2384,9 +2473,7 @@ mod tests {
         let code = r#":"mywebsite@is_an_atom.com""#;
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Atom(Atom(
-            "mywebsite@is_an_atom.com".to_string(),
-        ))]);
+        let target = Block(vec![atom!("mywebsite@is_an_atom.com")]);
 
         assert_eq!(result, target);
     }
@@ -2398,7 +2485,7 @@ mod tests {
         let code = ":\"john #{name}\"";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Atom(Atom("john #{name}".to_string()))]);
+        let target = Block(vec![atom!("john #{name}")]);
 
         assert_eq!(result, target);
     }
@@ -2408,7 +2495,7 @@ mod tests {
         let code = ":\"john\n\"";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Atom(Atom("john\n".to_string()))]);
+        let target = Block(vec![atom!("john\n")]);
 
         assert_eq!(result, target);
     }
@@ -2418,7 +2505,7 @@ mod tests {
         let code = "Elixir.MyModule";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Atom(Atom("Elixir.MyModule".to_string()))]);
+        let target = Block(vec![atom!("Elixir.MyModule")]);
 
         assert_eq!(result, target);
     }
@@ -2428,9 +2515,7 @@ mod tests {
         let code = "my_variable_name";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Identifier(Identifier(
-            "my_variable_name".to_string(),
-        ))]);
+        let target = Block(vec![id!("my_variable_name")]);
 
         assert_eq!(result, target);
     }
@@ -2453,12 +2538,9 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("reject".to_string()))),
-            remote_callee: Some(Box::new(Expression::Atom(Atom("Enum".to_string())))),
-            arguments: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Identifier(Identifier("my_func".to_string())),
-            ],
+            target: Box::new(id!("reject")),
+            remote_callee: Some(Box::new(atom!("Enum"))),
+            arguments: vec![id!("a"), id!("my_func")],
         })]);
 
         assert_eq!(result, target);
@@ -2470,8 +2552,8 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("encode".to_string()))),
-            remote_callee: Some(Box::new(Expression::Atom(Atom("base64".to_string())))),
+            target: Box::new(id!("encode")),
+            remote_callee: Some(Box::new(atom!("base64"))),
             arguments: vec![Expression::String("abc".to_string())],
         })]);
 
@@ -2484,11 +2566,9 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("parse".to_string()))),
-            remote_callee: Some(Box::new(Expression::Identifier(Identifier(
-                "json_parser".to_string(),
-            )))),
-            arguments: vec![Expression::Identifier(Identifier("body".to_string()))],
+            target: Box::new(id!("parse".to_string())),
+            remote_callee: Some(Box::new(id!("json_parser"))),
+            arguments: vec![id!("body")],
         })]);
 
         assert_eq!(result, target);
@@ -2503,9 +2583,9 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("to_integer".to_string()))),
+            target: Box::new(id!("to_integer")),
             remote_callee: None,
-            arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+            arguments: vec![id!("a")],
         })]);
 
         assert_eq!(result, target);
@@ -2517,9 +2597,9 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("to_integer".to_string()))),
+            target: Box::new(id!("to_integer")),
             remote_callee: None,
-            arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+            arguments: vec![id!("a")],
         })]);
 
         assert_eq!(result, target);
@@ -2531,15 +2611,10 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier(
-                "my_function".to_string(),
-            ))),
+            target: Box::new(id!("my_function")),
             remote_callee: None,
             arguments: vec![Expression::KeywordList(Keyword {
-                pairs: vec![(
-                    Expression::Atom(Atom("keywords".to_string())),
-                    Expression::Atom(Atom("only".to_string())),
-                )],
+                pairs: vec![(atom!("keywords"), atom!("only"))],
             })],
         })]);
 
@@ -2552,13 +2627,10 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("inspect".to_string()))),
-            remote_callee: Some(Box::new(Expression::Atom(Atom("IO".to_string())))),
+            target: Box::new(id!("inspect")),
+            remote_callee: Some(Box::new(atom!("IO"))),
             arguments: vec![Expression::KeywordList(Keyword {
-                pairs: vec![(
-                    Expression::Atom(Atom("label".to_string())),
-                    Expression::Atom(Atom("test".to_string())),
-                )],
+                pairs: vec![(atom!("label"), atom!("test"))],
             })],
         })]);
 
@@ -2571,15 +2643,12 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("inspect".to_string()))),
-            remote_callee: Some(Box::new(Expression::Atom(Atom("IO".to_string())))),
+            target: Box::new(id!("inspect")),
+            remote_callee: Some(Box::new(atom!("IO"))),
             arguments: vec![
-                Expression::Identifier(Identifier("my_struct".to_string())),
+                id!("my_struct"),
                 Expression::KeywordList(Keyword {
-                    pairs: vec![(
-                        Expression::Atom(Atom("limit".to_string())),
-                        Expression::Atom(Atom("infinity".to_string())),
-                    )],
+                    pairs: vec![(atom!("limit"), atom!("infinity"))],
                 }),
             ],
         })]);
@@ -2593,13 +2662,9 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("to_integer".to_string()))),
+            target: Box::new(id!("to_integer")),
             remote_callee: None,
-            arguments: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Integer(10),
-                Expression::Float(Float(30.2)),
-            ],
+            arguments: vec![id!("a"), int!(10), float!(30.2)],
         })]);
 
         assert_eq!(result, target);
@@ -2611,7 +2676,7 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Call(Call {
-            target: Box::new(Expression::Identifier(Identifier("to_integer".to_string()))),
+            target: Box::new(id!("to_integer")),
             remote_callee: None,
             arguments: vec![],
         })]);
@@ -2624,7 +2689,7 @@ mod tests {
         let code = "34.39212";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Float(Float(34.39212))]);
+        let target = Block(vec![float!(34.39212)]);
 
         assert_eq!(result, target);
     }
@@ -2634,7 +2699,7 @@ mod tests {
         let code = "100_000.50_000";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Float(Float(100000.5))]);
+        let target = Block(vec![float!(100000.5)]);
 
         assert_eq!(result, target);
     }
@@ -2644,7 +2709,7 @@ mod tests {
         let code = "1000";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Integer(1000)]);
+        let target = Block(vec![int!(1000)]);
 
         assert_eq!(result, target);
     }
@@ -2654,7 +2719,7 @@ mod tests {
         let code = "100_000";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::Integer(100_000)]);
+        let target = Block(vec![int!(100_000)]);
 
         assert_eq!(result, target);
     }
@@ -2663,7 +2728,7 @@ mod tests {
     fn parse_hex_integer() {
         let code = "0x1F";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Integer(31)]);
+        let target = Block(vec![int!(31)]);
 
         assert_eq!(result, target);
     }
@@ -2672,7 +2737,7 @@ mod tests {
     fn parse_binary_number() {
         let code = "0b1010";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Integer(10)]);
+        let target = Block(vec![int!(10)]);
 
         assert_eq!(result, target);
     }
@@ -2681,7 +2746,7 @@ mod tests {
     fn parse_octal_number() {
         let code = "0o777";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Integer(511)]);
+        let target = Block(vec![int!(511)]);
 
         assert_eq!(result, target);
     }
@@ -2814,9 +2879,7 @@ mod tests {
                     is_private: false,
                     parameters: vec![],
                     body: Box::new(Expression::Call(Call {
-                        target: Box::new(Expression::Identifier(Identifier(
-                            "priv_func".to_string(),
-                        ))),
+                        target: Box::new(id!("priv_func")),
                         remote_callee: None,
                         arguments: vec![],
                     })),
@@ -2826,7 +2889,7 @@ mod tests {
                     name: Identifier("priv_func".to_string()),
                     is_private: true,
                     parameters: vec![],
-                    body: Box::new(Expression::Integer(10)),
+                    body: Box::new(int!(10)),
                     guard_expression: None,
                 }),
             ])),
@@ -2847,10 +2910,10 @@ mod tests {
             name: Identifier("func".to_string()),
             is_private: false,
             parameters: vec![Parameter {
-                expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                default: Some(Box::new(Expression::Integer(10))),
+                expression: Box::new(id!("a")),
+                default: Some(Box::new(int!(10))),
             }],
-            body: Box::new(Expression::Integer(10)),
+            body: Box::new(int!(10)),
             guard_expression: None,
         })]);
 
@@ -2870,7 +2933,7 @@ mod tests {
             is_private: false,
             parameters: vec![],
             body: Box::new(Expression::Call(Call {
-                target: Box::new(Expression::Identifier(Identifier("priv_func".to_string()))),
+                target: Box::new(id!("priv_func")),
                 remote_callee: None,
                 arguments: vec![],
             })),
@@ -2891,14 +2954,11 @@ mod tests {
             is_private: false,
             parameters: vec![Parameter {
                 expression: Box::new(Expression::Map(Map {
-                    entries: vec![(
-                        Expression::Atom(Atom("a".to_string())),
-                        Expression::Identifier(Identifier("value".to_string())),
-                    )],
+                    entries: vec![(atom!("a"), id!("value"))],
                 })),
                 default: None,
             }],
-            body: Box::new(Expression::Identifier(Identifier("value".to_string()))),
+            body: Box::new(id!("value")),
             guard_expression: None,
         })]);
 
@@ -2917,18 +2977,14 @@ mod tests {
             name: Identifier("guarded".to_string()),
             is_private: false,
             parameters: vec![Parameter {
-                expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                expression: Box::new(id!("a")),
                 default: None,
             }],
-            body: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Equal,
-                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                right: Box::new(Expression::Integer(10)),
-            })),
+            body: Box::new(binary_operation!(id!("a"), BinaryOperator::Equal, int!(10))),
             guard_expression: Some(Box::new(Expression::Call(Call {
-                target: Box::new(Expression::Identifier(Identifier("is_integer".to_string()))),
+                target: Box::new(id!("is_integer")),
                 remote_callee: None,
-                arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+                arguments: vec![id!("a")],
             }))),
         })]);
 
@@ -2973,15 +3029,15 @@ mod tests {
             body: Box::new(Block(vec![])),
             parameters: vec![
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    expression: Box::new(id!("a")),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+                    expression: Box::new(id!("b")),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("c".to_string()))),
+                    expression: Box::new(id!("c")),
                     default: None,
                 },
             ],
@@ -3007,22 +3063,18 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: Identifier("func".to_string()),
             is_private: false,
-            body: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
-            })),
+            body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
             parameters: vec![
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    expression: Box::new(id!("a")),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+                    expression: Box::new(id!("b")),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("c".to_string()))),
+                    expression: Box::new(id!("c")),
                     default: None,
                 },
             ],
@@ -3041,11 +3093,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::List(List {
-            items: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Integer(10),
-                Expression::Atom(Atom("atom".to_string())),
-            ],
+            items: vec![id!("a"), int!(10), atom!("atom")],
             cons: None,
         })]);
 
@@ -3060,18 +3108,12 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::List(List {
             items: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Identifier(Identifier("b".to_string())),
+                id!("a"),
+                id!("b"),
                 Expression::KeywordList(Keyword {
                     pairs: vec![
-                        (
-                            Expression::Atom(Atom("module".to_string())),
-                            Expression::Atom(Atom("atom".to_string())),
-                        ),
-                        (
-                            Expression::Atom(Atom("number".to_string())),
-                            Expression::Integer(200),
-                        ),
+                        (atom!("module"), atom!("atom")),
+                        (atom!("number"), int!(200)),
                     ],
                 }),
             ],
@@ -3097,26 +3139,17 @@ mod tests {
     fn parse_list_cons() {
         let code = "[head, 10 | _tail] = [1, 2, 3]";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Match,
-            left: Box::new(Expression::List(List {
-                items: vec![
-                    Expression::Identifier(Identifier("head".to_string())),
-                    Expression::Integer(10),
-                ],
-                cons: Some(Box::new(Expression::Identifier(Identifier(
-                    "_tail".to_string(),
-                )))),
-            })),
-            right: Box::new(Expression::List(List {
-                items: vec![
-                    Expression::Integer(1),
-                    Expression::Integer(2),
-                    Expression::Integer(3),
-                ],
+        let target = Block(vec![binary_operation!(
+            Expression::List(List {
+                items: vec![id!("head"), int!(10)],
+                cons: Some(Box::new(id!("_tail"))),
+            }),
+            BinaryOperator::Match,
+            Expression::List(List {
+                items: vec![int!(1), int!(2), int!(3)],
                 cons: None,
-            })),
-        })]);
+            })
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3128,11 +3161,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Tuple(Tuple {
-            items: vec![
-                Expression::Identifier(Identifier("a".to_string())),
-                Expression::Integer(10),
-                Expression::Atom(Atom("atom".to_string())),
-            ],
+            items: vec![id!("a"), int!(10), atom!("atom")],
         })]);
 
         assert_eq!(result, target);
@@ -3151,7 +3180,7 @@ mod tests {
     fn parse_true() {
         let code = "true";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Bool(true)]);
+        let target = Block(vec![bool!(true)]);
         assert_eq!(result, target);
     }
 
@@ -3159,7 +3188,7 @@ mod tests {
     fn parse_false() {
         let code = "false";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Bool(false)]);
+        let target = Block(vec![bool!(false)]);
         assert_eq!(result, target);
     }
 
@@ -3167,7 +3196,7 @@ mod tests {
     fn parse_nil() {
         let code = "nil";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Nil]);
+        let target = Block(vec![nil!()]);
         assert_eq!(result, target);
     }
 
@@ -3179,15 +3208,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
             entries: vec![
-                (
-                    Expression::Atom(Atom("a".to_string())),
-                    Expression::Integer(10),
-                ),
-                (
-                    Expression::Atom(Atom("b".to_string())),
-                    Expression::Bool(true),
-                ),
-                (Expression::Atom(Atom("c".to_string())), Expression::Nil),
+                (atom!("a"), int!(10)),
+                (atom!("b"), bool!(true)),
+                (atom!("c"), nil!()),
             ],
         })]);
 
@@ -3202,13 +3225,10 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
             entries: vec![
-                (Expression::String("a".to_owned()), Expression::Integer(10)),
-                (
-                    Expression::String("String".to_owned()),
-                    Expression::Bool(true),
-                ),
-                (Expression::String("key".to_owned()), Expression::Nil),
-                (Expression::Integer(10), Expression::Integer(30)),
+                (Expression::String("a".to_owned()), int!(10)),
+                (Expression::String("String".to_owned()), bool!(true)),
+                (Expression::String("key".to_owned()), nil!()),
+                (int!(10), int!(30)),
             ],
         })]);
 
@@ -3223,16 +3243,10 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
             entries: vec![
-                (Expression::String("a".to_owned()), Expression::Integer(10)),
-                (
-                    Expression::String("String".to_owned()),
-                    Expression::Bool(true),
-                ),
-                (
-                    Expression::Atom(Atom("key".to_owned())),
-                    Expression::Integer(50),
-                ),
-                (Expression::Atom(Atom("Map".to_owned())), Expression::Nil),
+                (Expression::String("a".to_owned()), int!(10)),
+                (Expression::String("String".to_owned()), bool!(true)),
+                (atom!("key"), int!(50)),
+                (atom!("Map"), nil!()),
             ],
         })]);
 
@@ -3248,14 +3262,8 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Map(Map {
             entries: vec![
-                (
-                    Expression::Atom(Atom("a".to_string())),
-                    Expression::Integer(10),
-                ),
-                (
-                    Expression::Atom(Atom("myweb@site.com".to_string())),
-                    Expression::Bool(true),
-                ),
+                (atom!("a"), int!(10)),
+                (atom!("myweb@site.com"), bool!(true)),
             ],
         })]);
 
@@ -3291,7 +3299,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::AttributeDef(Attribute {
             name: Identifier("timeout".to_string()),
-            value: Box::new(Expression::Integer(5000)),
+            value: Box::new(int!(5000)),
         })]);
 
         assert_eq!(result, target);
@@ -3332,7 +3340,7 @@ mod tests {
                 Expression::FunctionDef(Function {
                     name: Identifier("func".to_string()),
                     is_private: false,
-                    body: Box::new(Expression::Integer(10)),
+                    body: Box::new(int!(10)),
                     parameters: vec![],
                     guard_expression: None,
                 }),
@@ -3359,14 +3367,8 @@ mod tests {
         let target = Block(vec![Expression::Struct(Struct {
             name: Atom("MyApp.User".to_string()),
             entries: vec![
-                (
-                    Expression::Atom(Atom("name".to_string())),
-                    Expression::String("john".to_string()),
-                ),
-                (
-                    Expression::Atom(Atom("age".to_string())),
-                    Expression::Integer(25),
-                ),
+                (atom!("name"), Expression::String("john".to_string())),
+                (atom!("age"), int!(25)),
             ],
         })]);
 
@@ -3379,7 +3381,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
             operator: UnaryOperator::Plus,
-            operand: Box::new(Expression::Integer(10)),
+            operand: Box::new(int!(10)),
         })]);
 
         assert_eq!(result, target);
@@ -3391,7 +3393,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
             operator: UnaryOperator::Minus,
-            operand: Box::new(Expression::Integer(1000)),
+            operand: Box::new(int!(1000)),
         })]);
 
         assert_eq!(result, target);
@@ -3403,7 +3405,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
             operator: UnaryOperator::StrictNot,
-            operand: Box::new(Expression::Bool(true)),
+            operand: Box::new(bool!(true)),
         })]);
 
         assert_eq!(result, target);
@@ -3415,7 +3417,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
             operator: UnaryOperator::RelaxedNot,
-            operand: Box::new(Expression::Bool(false)),
+            operand: Box::new(bool!(false)),
         })]);
 
         assert_eq!(result, target);
@@ -3429,7 +3431,7 @@ mod tests {
             operator: UnaryOperator::RelaxedNot,
             operand: Box::new(Expression::UnaryOperation(UnaryOperation {
                 operator: UnaryOperator::RelaxedNot,
-                operand: Box::new(Expression::Bool(false)),
+                operand: Box::new(bool!(false)),
             })),
         })]);
 
@@ -3442,7 +3444,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
             operator: UnaryOperator::Pin,
-            operand: Box::new(Expression::Identifier(Identifier("var".to_string()))),
+            operand: Box::new(id!("var")),
         })]);
 
         assert_eq!(result, target);
@@ -3452,11 +3454,11 @@ mod tests {
     fn parse_binary_plus() {
         let code = "20 + 40";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Plus,
-            left: Box::new(Expression::Integer(20)),
-            right: Box::new(Expression::Integer(40)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(20),
+            BinaryOperator::Plus,
+            int!(40)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3465,11 +3467,11 @@ mod tests {
     fn parse_binary_minus() {
         let code = "100 - 50";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Minus,
-            left: Box::new(Expression::Integer(100)),
-            right: Box::new(Expression::Integer(50)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(100),
+            BinaryOperator::Minus,
+            int!(50)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3478,11 +3480,11 @@ mod tests {
     fn parse_binary_star() {
         let code = "8 * 8";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Mult,
-            left: Box::new(Expression::Integer(8)),
-            right: Box::new(Expression::Integer(8)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(8),
+            BinaryOperator::Mult,
+            int!(8)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3491,11 +3493,11 @@ mod tests {
     fn parse_binary_div() {
         let code = "10 / 2";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Div,
-            left: Box::new(Expression::Integer(10)),
-            right: Box::new(Expression::Integer(2)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(10),
+            BinaryOperator::Div,
+            int!(2)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3504,18 +3506,14 @@ mod tests {
     fn parse_binary_list_concatenation() {
         let code = "[1, 2, 3] ++ tail";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::ListConcatenation,
-            left: Box::new(Expression::List(List {
-                items: vec![
-                    Expression::Integer(1),
-                    Expression::Integer(2),
-                    Expression::Integer(3),
-                ],
+        let target = Block(vec![binary_operation!(
+            Expression::List(List {
+                items: vec![int!(1), int!(2), int!(3)],
                 cons: None,
-            })),
-            right: Box::new(Expression::Identifier(Identifier("tail".to_string()))),
-        })]);
+            }),
+            BinaryOperator::ListConcatenation,
+            id!("tail")
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3524,18 +3522,14 @@ mod tests {
     fn parse_binary_list_subtraction() {
         let code = "cache -- [1, 2, 3]";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::ListSubtraction,
-            left: Box::new(Expression::Identifier(Identifier("cache".to_string()))),
-            right: Box::new(Expression::List(List {
-                items: vec![
-                    Expression::Integer(1),
-                    Expression::Integer(2),
-                    Expression::Integer(3),
-                ],
+        let target = Block(vec![binary_operation!(
+            id!("cache"),
+            BinaryOperator::ListSubtraction,
+            Expression::List(List {
+                items: vec![int!(1), int!(2), int!(3)],
                 cons: None,
-            })),
-        })]);
+            })
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3544,11 +3538,11 @@ mod tests {
     fn parse_binary_strict_and() {
         let code = "true and false";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::StrictAnd,
-            left: Box::new(Expression::Bool(true)),
-            right: Box::new(Expression::Bool(false)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            bool!(true),
+            BinaryOperator::StrictAnd,
+            bool!(false)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3557,11 +3551,11 @@ mod tests {
     fn parse_binary_relaxed_and() {
         let code = ":atom && false";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::RelaxedAnd,
-            left: Box::new(Expression::Atom(Atom("atom".to_string()))),
-            right: Box::new(Expression::Bool(false)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            atom!("atom"),
+            BinaryOperator::RelaxedAnd,
+            bool!(false)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3570,11 +3564,11 @@ mod tests {
     fn parse_binary_strict_or() {
         let code = "false or true";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::StrictOr,
-            left: Box::new(Expression::Bool(false)),
-            right: Box::new(Expression::Bool(true)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            bool!(false),
+            BinaryOperator::StrictOr,
+            bool!(true)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3583,11 +3577,11 @@ mod tests {
     fn parse_binary_relaxed_or() {
         let code = "a || b";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::RelaxedOr,
-            left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-            right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
-        })]);
+        let target = Block(vec![binary_operation!(
+            id!("a"),
+            BinaryOperator::RelaxedOr,
+            id!("b")
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3596,18 +3590,14 @@ mod tests {
     fn parse_binary_in() {
         let code = "1 in [1, 2, 3]";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::In,
-            left: Box::new(Expression::Integer(1)),
-            right: Box::new(Expression::List(List {
-                items: vec![
-                    Expression::Integer(1),
-                    Expression::Integer(2),
-                    Expression::Integer(3),
-                ],
+        let target = Block(vec![binary_operation!(
+            int!(1),
+            BinaryOperator::In,
+            Expression::List(List {
+                items: vec![int!(1), int!(2), int!(3)],
                 cons: None,
-            })),
-        })]);
+            })
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3616,18 +3606,14 @@ mod tests {
     fn parse_binary_not_in() {
         let code = "1 not in [1, 2, 3]";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::NotIn,
-            left: Box::new(Expression::Integer(1)),
-            right: Box::new(Expression::List(List {
-                items: vec![
-                    Expression::Integer(1),
-                    Expression::Integer(2),
-                    Expression::Integer(3),
-                ],
+        let target = Block(vec![binary_operation!(
+            int!(1),
+            BinaryOperator::NotIn,
+            Expression::List(List {
+                items: vec![int!(1), int!(2), int!(3)],
                 cons: None,
-            })),
-        })]);
+            })
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3636,11 +3622,11 @@ mod tests {
     fn parse_binary_concat() {
         let code = r#""hello" <> "world""#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::BinaryConcat,
-            left: Box::new(Expression::String("hello".to_string())),
-            right: Box::new(Expression::String("world".to_string())),
-        })]);
+        let target = Block(vec![binary_operation!(
+            Expression::String("hello".to_string()),
+            BinaryOperator::BinaryConcat,
+            Expression::String("world".to_string())
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3649,15 +3635,15 @@ mod tests {
     fn parse_binary_pipe() {
         let code = "value |> function()";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Pipe,
-            left: Box::new(Expression::Identifier(Identifier("value".to_string()))),
-            right: Box::new(Expression::Call(Call {
-                target: Box::new(Expression::Identifier(Identifier("function".to_string()))),
+        let target = Block(vec![binary_operation!(
+            id!("value"),
+            BinaryOperator::Pipe,
+            Expression::Call(Call {
+                target: Box::new(id!("function")),
                 remote_callee: None,
                 arguments: vec![],
-            })),
-        })]);
+            })
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3666,11 +3652,11 @@ mod tests {
     fn parse_binary_equal() {
         let code = "10 == 10";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Equal,
-            left: Box::new(Expression::Integer(10)),
-            right: Box::new(Expression::Integer(10)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(10),
+            BinaryOperator::Equal,
+            int!(10)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3679,11 +3665,11 @@ mod tests {
     fn parse_binary_strict_equal() {
         let code = "10.0 === 10";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::StrictEqual,
-            left: Box::new(Expression::Float(Float(10.0))),
-            right: Box::new(Expression::Integer(10)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            float!(10.0),
+            BinaryOperator::StrictEqual,
+            int!(10)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3692,11 +3678,11 @@ mod tests {
     fn parse_binary_less_than() {
         let code = "9 < 10";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::LessThan,
-            left: Box::new(Expression::Integer(9)),
-            right: Box::new(Expression::Integer(10)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(9),
+            BinaryOperator::LessThan,
+            int!(10)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3705,11 +3691,11 @@ mod tests {
     fn parse_binary_less_than_or_equal() {
         let code = "9 <= 10";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::LessThanOrEqual,
-            left: Box::new(Expression::Integer(9)),
-            right: Box::new(Expression::Integer(10)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(9),
+            BinaryOperator::LessThanOrEqual,
+            int!(10)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3718,11 +3704,11 @@ mod tests {
     fn parse_binary_greater_than() {
         let code = "10 > 5";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::GreaterThan,
-            left: Box::new(Expression::Integer(10)),
-            right: Box::new(Expression::Integer(5)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(10),
+            BinaryOperator::GreaterThan,
+            int!(5)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3731,11 +3717,11 @@ mod tests {
     fn parse_binary_greater_than_or_equal() {
         let code = "2 >= 2";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::GreaterThanOrEqual,
-            left: Box::new(Expression::Integer(2)),
-            right: Box::new(Expression::Integer(2)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(2),
+            BinaryOperator::GreaterThanOrEqual,
+            int!(2)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3750,11 +3736,11 @@ mod tests {
             let code = format!("2 {} 2", operator);
             let result = parse(&code).unwrap();
 
-            let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Custom(operator.to_string()),
-                left: Box::new(Expression::Integer(2)),
-                right: Box::new(Expression::Integer(2)),
-            })]);
+            let target = Block(vec![binary_operation!(
+                int!(2),
+                BinaryOperator::Custom(operator.to_string()),
+                int!(2)
+            )]);
 
             assert_eq!(result, target);
         }
@@ -3765,8 +3751,8 @@ mod tests {
         let code = "0..10";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Range(Range {
-            start: Box::new(Expression::Integer(0)),
-            end: Box::new(Expression::Integer(10)),
+            start: Box::new(int!(0)),
+            end: Box::new(int!(10)),
             step: None,
         })]);
 
@@ -3778,9 +3764,9 @@ mod tests {
         let code = "0..10//2";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Range(Range {
-            start: Box::new(Expression::Integer(0)),
-            end: Box::new(Expression::Integer(10)),
-            step: Some(Box::new(Expression::Integer(2))),
+            start: Box::new(int!(0)),
+            end: Box::new(int!(10)),
+            step: Some(Box::new(int!(2))),
         })]);
 
         assert_eq!(result, target);
@@ -3790,11 +3776,11 @@ mod tests {
     fn parse_binary_match_identifier() {
         let code = "my_var = 10";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Match,
-            left: Box::new(Expression::Identifier(Identifier("my_var".to_string()))),
-            right: Box::new(Expression::Integer(10)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            id!("my_var"),
+            BinaryOperator::Match,
+            int!(10)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3803,11 +3789,11 @@ mod tests {
     fn parse_binary_match_expressions() {
         let code = "10 = 10";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Match,
-            left: Box::new(Expression::Integer(10)),
-            right: Box::new(Expression::Integer(10)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            int!(10),
+            BinaryOperator::Match,
+            int!(10)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3816,11 +3802,11 @@ mod tests {
     fn parse_binary_match_wildcard() {
         let code = "_ = 10";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::BinaryOperation(BinaryOperation {
-            operator: BinaryOperator::Match,
-            left: Box::new(Expression::Identifier(Identifier("_".to_string()))),
-            right: Box::new(Expression::Integer(10)),
-        })]);
+        let target = Block(vec![binary_operation!(
+            id!("_"),
+            BinaryOperator::Match,
+            int!(10)
+        )]);
 
         assert_eq!(result, target);
     }
@@ -3835,8 +3821,8 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::If(ConditionalExpression {
-            condition_expression: Box::new(Expression::Bool(false)),
-            do_expression: Box::new(Expression::Atom(Atom("ok".to_string()))),
+            condition_expression: Box::new(bool!(false)),
+            do_expression: Box::new(atom!("ok")),
             else_expression: None,
         })]);
 
@@ -3854,13 +3840,13 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::If(ConditionalExpression {
-            condition_expression: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::GreaterThan,
-                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                right: Box::new(Expression::Integer(5)),
-            })),
-            do_expression: Box::new(Expression::Integer(10)),
-            else_expression: Some(Box::new(Expression::Integer(20))),
+            condition_expression: Box::new(binary_operation!(
+                id!("a"),
+                BinaryOperator::GreaterThan,
+                int!(5)
+            )),
+            do_expression: Box::new(int!(10)),
+            else_expression: Some(Box::new(int!(20))),
         })]);
 
         assert_eq!(result, target);
@@ -3889,10 +3875,7 @@ mod tests {
         let target = Block(vec![Expression::Require(Require {
             target: Atom("Logger".to_string()),
             options: Some(Keyword {
-                pairs: vec![(
-                    Expression::Atom(Atom("level".to_string())),
-                    Expression::Atom(Atom("info".to_string())),
-                )],
+                pairs: vec![(atom!("level"), atom!("info"))],
             }),
         })]);
 
@@ -3922,10 +3905,7 @@ mod tests {
         let target = Block(vec![Expression::Alias(Alias {
             target: Atom("MyKeyword".to_string()),
             options: Some(Keyword {
-                pairs: vec![(
-                    Expression::Atom(Atom("as".to_string())),
-                    Expression::Atom(Atom("Keyword".to_string())),
-                )],
+                pairs: vec![(atom!("as"), atom!("Keyword"))],
             }),
         })]);
 
@@ -3955,10 +3935,7 @@ mod tests {
         let target = Block(vec![Expression::Use(Use {
             target: Atom("MyModule".to_string()),
             options: Some(Keyword {
-                pairs: vec![(
-                    Expression::Atom(Atom("some".to_string())),
-                    Expression::Atom(Atom("options".to_string())),
-                )],
+                pairs: vec![(atom!("some"), atom!("options"))],
             }),
         })]);
 
@@ -3989,9 +3966,9 @@ mod tests {
             target: Atom("String".to_string()),
             options: Some(Keyword {
                 pairs: vec![(
-                    Expression::Atom(Atom("only".to_string())),
+                    atom!("only"),
                     Expression::List(List {
-                        items: vec![Expression::Atom(Atom("split".to_string()))],
+                        items: vec![atom!("split")],
                         cons: None,
                     }),
                 )],
@@ -4012,21 +3989,21 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Expression::Block(vec![Expression::Case(CaseExpression {
-            target_expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+            target_expression: Box::new(id!("a")),
             arms: vec![
                 CaseArm {
-                    left: Box::new(Expression::Integer(10)),
-                    body: Box::new(Expression::Bool(true)),
+                    left: Box::new(int!(10)),
+                    body: Box::new(bool!(true)),
                     guard_expr: None,
                 },
                 CaseArm {
-                    left: Box::new(Expression::Integer(20)),
-                    body: Box::new(Expression::Bool(false)),
+                    left: Box::new(int!(20)),
+                    body: Box::new(bool!(false)),
                     guard_expr: None,
                 },
                 CaseArm {
-                    left: Box::new(Expression::Identifier(Identifier("_else".to_string()))),
-                    body: Box::new(Expression::Nil),
+                    left: Box::new(id!("_else")),
+                    body: Box::new(nil!()),
                     guard_expr: None,
                 },
             ],
@@ -4048,35 +4025,23 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Case(CaseExpression {
-            target_expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+            target_expression: Box::new(id!("a")),
             arms: vec![
                 CaseArm {
-                    left: Box::new(Expression::Integer(10)),
+                    left: Box::new(int!(10)),
                     body: Box::new(Expression::Block(vec![
-                        Expression::BinaryOperation(BinaryOperation {
-                            operator: BinaryOperator::Match,
-                            left: Box::new(Expression::Identifier(Identifier(
-                                "result".to_string(),
-                            ))),
-                            right: Box::new(Expression::BinaryOperation(BinaryOperation {
-                                operator: BinaryOperator::Plus,
-                                left: Box::new(Expression::Integer(2)),
-                                right: Box::new(Expression::Integer(2)),
-                            })),
-                        }),
-                        Expression::BinaryOperation(BinaryOperation {
-                            operator: BinaryOperator::Equal,
-                            left: Box::new(Expression::Identifier(Identifier(
-                                "result".to_string(),
-                            ))),
-                            right: Box::new(Expression::Integer(4)),
-                        }),
+                        binary_operation!(
+                            id!("result"),
+                            BinaryOperator::Match,
+                            binary_operation!(int!(2), BinaryOperator::Plus, int!(2))
+                        ),
+                        binary_operation!(id!("result"), BinaryOperator::Equal, int!(4)),
                     ])),
                     guard_expr: None,
                 },
                 CaseArm {
-                    left: Box::new(Expression::Identifier(Identifier("_else".to_string()))),
-                    body: Box::new(Expression::Nil),
+                    left: Box::new(id!("_else")),
+                    body: Box::new(nil!()),
                     guard_expr: None,
                 },
             ],
@@ -4096,25 +4061,25 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Expression::Block(vec![Expression::Case(CaseExpression {
-            target_expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+            target_expression: Box::new(id!("a")),
             arms: vec![
                 CaseArm {
-                    left: Box::new(Expression::Integer(10)),
-                    body: Box::new(Expression::Bool(true)),
-                    guard_expr: Some(Box::new(Expression::Bool(true))),
+                    left: Box::new(int!(10)),
+                    body: Box::new(bool!(true)),
+                    guard_expr: Some(Box::new(bool!(true))),
                 },
                 CaseArm {
-                    left: Box::new(Expression::Integer(20)),
-                    body: Box::new(Expression::Bool(false)),
-                    guard_expr: Some(Box::new(Expression::BinaryOperation(BinaryOperation {
-                        operator: BinaryOperator::Equal,
-                        left: Box::new(Expression::Integer(2)),
-                        right: Box::new(Expression::Integer(2)),
-                    }))),
+                    left: Box::new(int!(20)),
+                    body: Box::new(bool!(false)),
+                    guard_expr: Some(Box::new(binary_operation!(
+                        int!(2),
+                        BinaryOperator::Equal,
+                        int!(2)
+                    ))),
                 },
                 CaseArm {
-                    left: Box::new(Expression::Identifier(Identifier("_else".to_string()))),
-                    body: Box::new(Expression::Nil),
+                    left: Box::new(id!("_else")),
+                    body: Box::new(nil!()),
                     guard_expr: None,
                 },
             ],
@@ -4137,32 +4102,28 @@ mod tests {
         let target = Block(vec![Expression::Cond(CondExpression {
             arms: vec![
                 CondArm {
-                    condition: Box::new(Expression::BinaryOperation(BinaryOperation {
-                        operator: BinaryOperator::GreaterThan,
-                        left: Box::new(Expression::Integer(10)),
-                        right: Box::new(Expression::Integer(20)),
-                    })),
-                    body: Box::new(Expression::Bool(true)),
+                    condition: Box::new(binary_operation!(
+                        int!(10),
+                        BinaryOperator::GreaterThan,
+                        int!(20)
+                    )),
+                    body: Box::new(bool!(true)),
                 },
                 CondArm {
-                    condition: Box::new(Expression::BinaryOperation(BinaryOperation {
-                        operator: BinaryOperator::LessThan,
-                        left: Box::new(Expression::Integer(20)),
-                        right: Box::new(Expression::Integer(10)),
-                    })),
-                    body: Box::new(Expression::Bool(true)),
+                    condition: Box::new(binary_operation!(
+                        int!(20),
+                        BinaryOperator::LessThan,
+                        int!(10)
+                    )),
+                    body: Box::new(bool!(true)),
                 },
                 CondArm {
-                    condition: Box::new(Expression::BinaryOperation(BinaryOperation {
-                        operator: BinaryOperator::Equal,
-                        left: Box::new(Expression::Integer(5)),
-                        right: Box::new(Expression::Integer(5)),
-                    })),
-                    body: Box::new(Expression::Integer(10)),
+                    condition: Box::new(binary_operation!(int!(5), BinaryOperator::Equal, int!(5))),
+                    body: Box::new(int!(10)),
                 },
                 CondArm {
-                    condition: Box::new(Expression::Bool(true)),
-                    body: Box::new(Expression::Bool(false)),
+                    condition: Box::new(bool!(true)),
+                    body: Box::new(bool!(false)),
                 },
             ],
         })]);
@@ -4184,27 +4145,19 @@ mod tests {
         let target = Expression::Block(vec![Expression::Cond(CondExpression {
             arms: vec![
                 CondArm {
-                    condition: Box::new(Expression::BinaryOperation(BinaryOperation {
-                        operator: BinaryOperator::GreaterThan,
-                        left: Box::new(Expression::Integer(10)),
-                        right: Box::new(Expression::Integer(20)),
-                    })),
+                    condition: Box::new(binary_operation!(
+                        int!(10),
+                        BinaryOperator::GreaterThan,
+                        int!(20)
+                    )),
                     body: Box::new(Block(vec![
-                        Expression::BinaryOperation(BinaryOperation {
-                            operator: BinaryOperator::Match,
-                            left: Box::new(Expression::Identifier(Identifier("var".to_string()))),
-                            right: Box::new(Expression::Integer(5)),
-                        }),
-                        Expression::BinaryOperation(BinaryOperation {
-                            operator: BinaryOperator::GreaterThan,
-                            left: Box::new(Expression::Integer(10)),
-                            right: Box::new(Expression::Identifier(Identifier("var".to_string()))),
-                        }),
+                        binary_operation!(id!("var"), BinaryOperator::Match, int!(5)),
+                        binary_operation!(int!(10), BinaryOperator::GreaterThan, id!("var")),
                     ])),
                 },
                 CondArm {
-                    condition: Box::new(Expression::Bool(true)),
-                    body: Box::new(Expression::Bool(false)),
+                    condition: Box::new(bool!(true)),
+                    body: Box::new(bool!(false)),
                 },
             ],
         })]);
@@ -4221,8 +4174,8 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Expression::Block(vec![Expression::Unless(ConditionalExpression {
-            condition_expression: Box::new(Expression::Bool(false)),
-            do_expression: Box::new(Expression::Atom(Atom("ok".to_string()))),
+            condition_expression: Box::new(bool!(false)),
+            do_expression: Box::new(atom!("ok")),
             else_expression: None,
         })]);
 
@@ -4240,9 +4193,9 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Expression::Block(vec![Expression::Unless(ConditionalExpression {
-            condition_expression: Box::new(Expression::Bool(false)),
-            do_expression: Box::new(Expression::Atom(Atom("ok".to_string()))),
-            else_expression: Some(Box::new(Expression::Atom(Atom("not_ok".to_string())))),
+            condition_expression: Box::new(bool!(false)),
+            do_expression: Box::new(atom!("ok")),
+            else_expression: Some(Box::new(atom!("not_ok"))),
         })]);
 
         assert_eq!(result, target);
@@ -4255,8 +4208,8 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Expression::Block(vec![Expression::Access(Access {
-            target: Box::new(Expression::Identifier(Identifier("my_cache".to_string()))),
-            access_expression: Box::new(Expression::Atom(Atom("key".to_string()))),
+            target: Box::new(id!("my_cache")),
+            access_expression: Box::new(atom!("key")),
         })]);
 
         assert_eq!(result, target);
@@ -4267,11 +4220,7 @@ mod tests {
         let code = "&(&1 * &2)";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::CaptureExpression(Box::new(
-            Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Mult,
-                left: Box::new(Expression::Identifier(Identifier("&1".to_string()))),
-                right: Box::new(Expression::Identifier(Identifier("&2".to_string()))),
-            }),
+            binary_operation!(id!("&1"), BinaryOperator::Mult, id!("&2")),
         ))]);
 
         assert_eq!(result, target);
@@ -4282,11 +4231,7 @@ mod tests {
         let code = "& &1 + &2";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::CaptureExpression(Box::new(
-            Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Identifier(Identifier("&1".to_string()))),
-                right: Box::new(Expression::Identifier(Identifier("&2".to_string()))),
-            }),
+            binary_operation!(id!("&1"), BinaryOperator::Plus, id!("&2")),
         ))]);
 
         assert_eq!(result, target);
@@ -4340,7 +4285,7 @@ mod tests {
         let code = "my_map.my_key";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::DotAccess(DotAccess {
-            body: Box::new(Expression::Identifier(Identifier("my_map".to_string()))),
+            body: Box::new(id!("my_map")),
             key: Identifier("my_key".to_string()),
         })]);
 
@@ -4353,10 +4298,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::DotAccess(DotAccess {
             body: Box::new(Expression::Map(Map {
-                entries: vec![(
-                    Expression::Atom(Atom("a".to_string())),
-                    Expression::Integer(10),
-                )],
+                entries: vec![(atom!("a"), int!(10))],
             })),
             key: Identifier("a".to_string()),
         })]);
@@ -4370,12 +4312,8 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Lambda(Lambda {
             clauses: vec![LambdaClause {
-                arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
-                body: Expression::BinaryOperation(BinaryOperation {
-                    operator: BinaryOperator::Plus,
-                    left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                    right: Box::new(Expression::Integer(10)),
-                }),
+                arguments: vec![id!("a")],
+                body: binary_operation!(id!("a"), BinaryOperator::Plus, int!(10)),
                 guard: None,
             }],
         })]);
@@ -4392,12 +4330,9 @@ mod tests {
         let target = Block(vec![Expression::Lambda(Lambda {
             clauses: vec![LambdaClause {
                 arguments: vec![Expression::Map(Map {
-                    entries: vec![(
-                        Expression::Atom(Atom("a".to_string())),
-                        Expression::Integer(10),
-                    )],
+                    entries: vec![(atom!("a"), int!(10))],
                 })],
-                body: Expression::Integer(10),
+                body: int!(10),
                 guard: None,
             }],
         })]);
@@ -4416,19 +4351,13 @@ mod tests {
         let target = Block(vec![Expression::Lambda(Lambda {
             clauses: vec![
                 LambdaClause {
-                    arguments: vec![
-                        Expression::Integer(1),
-                        Expression::Identifier(Identifier("b".to_string())),
-                    ],
-                    body: Expression::Integer(10),
+                    arguments: vec![int!(1), id!("b")],
+                    body: int!(10),
                     guard: None,
                 },
                 LambdaClause {
-                    arguments: vec![
-                        Expression::Identifier(Identifier("_".to_string())),
-                        Expression::Identifier(Identifier("_".to_string())),
-                    ],
-                    body: Expression::Integer(20),
+                    arguments: vec![id!("_"), id!("_")],
+                    body: int!(20),
                     guard: None,
                 },
             ],
@@ -4448,18 +4377,14 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Lambda(Lambda {
             clauses: vec![LambdaClause {
-                arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+                arguments: vec![id!("a")],
                 body: Block(vec![
-                    Expression::BinaryOperation(BinaryOperation {
-                        operator: BinaryOperator::Match,
-                        left: Box::new(Expression::Identifier(Identifier("result".to_string()))),
-                        right: Box::new(Expression::BinaryOperation(BinaryOperation {
-                            operator: BinaryOperator::Plus,
-                            left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                            right: Box::new(Expression::Integer(1)),
-                        })),
-                    }),
-                    Expression::Identifier(Identifier("result".to_string())),
+                    binary_operation!(
+                        id!("result"),
+                        BinaryOperator::Match,
+                        binary_operation!(id!("a"), BinaryOperator::Plus, int!(1))
+                    ),
+                    id!("result"),
                 ]),
                 guard: None,
             }],
@@ -4479,20 +4404,18 @@ mod tests {
         let target = Block(vec![Expression::Lambda(Lambda {
             clauses: vec![
                 LambdaClause {
-                    arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+                    arguments: vec![id!("a")],
                     guard: Some(Box::new(Expression::Call(Call {
-                        target: Box::new(Expression::Identifier(Identifier(
-                            "is_integer".to_string(),
-                        ))),
+                        target: Box::new(id!("is_integer")),
                         remote_callee: None,
-                        arguments: vec![Expression::Identifier(Identifier("a".to_string()))],
+                        arguments: vec![id!("a")],
                     }))),
-                    body: Expression::Integer(10),
+                    body: int!(10),
                 },
                 LambdaClause {
-                    arguments: vec![Expression::Identifier(Identifier("_".to_string()))],
+                    arguments: vec![id!("_")],
                     guard: None,
-                    body: Expression::Integer(20),
+                    body: int!(20),
                 },
             ],
         })]);
@@ -4506,13 +4429,11 @@ mod tests {
         (1 + 1)
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Grouping(Box::new(
-            Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Integer(1)),
-                right: Box::new(Expression::Integer(1)),
-            }),
-        ))]);
+        let target = Block(vec![Expression::Grouping(Box::new(binary_operation!(
+            int!(1),
+            BinaryOperator::Plus,
+            int!(1)
+        )))]);
 
         assert_eq!(result, target);
     }
@@ -4524,11 +4445,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Grouping(Box::new(Expression::Grouping(
-            Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Integer(1)),
-                right: Box::new(Expression::Integer(1)),
-            })),
+            Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
         )))]);
 
         assert_eq!(result, target);
@@ -4544,11 +4461,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Quote(Quote {
             options: None,
-            body: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Integer(1)),
-                right: Box::new(Expression::Integer(1)),
-            })),
+            body: Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
         })]);
 
         assert_eq!(result, target);
@@ -4565,16 +4478,9 @@ mod tests {
 
         let target = Block(vec![Expression::Quote(Quote {
             options: Some(Keyword {
-                pairs: vec![(
-                    Expression::Atom(Atom("line".to_string())),
-                    Expression::Integer(10),
-                )],
+                pairs: vec![(atom!("line"), int!(10))],
             }),
-            body: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Integer(1)),
-                right: Box::new(Expression::Integer(1)),
-            })),
+            body: Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
         })]);
 
         assert_eq!(result, target);
@@ -4596,11 +4502,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Quote(Quote {
             options: None,
-            body: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Integer(1)),
-                right: Box::new(Expression::Integer(1)),
-            })),
+            body: Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
         })]);
 
         assert_eq!(result, target);
@@ -4614,19 +4516,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Quote(Quote {
             options: Some(Keyword {
-                pairs: vec![
-                    (
-                        Expression::Atom(Atom("line".to_string())),
-                        Expression::Integer(10),
-                    ),
-                    (Expression::Atom(Atom("file".to_string())), Expression::Nil),
-                ],
+                pairs: vec![(atom!("line"), int!(10)), (atom!("file"), nil!())],
             }),
-            body: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Integer(1)),
-                right: Box::new(Expression::Integer(1)),
-            })),
+            body: Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
         })]);
 
         assert_eq!(result, target);
@@ -4676,23 +4568,19 @@ mod tests {
         let target = Block(vec![Expression::MacroDef(Macro {
             name: Identifier("my_macro".to_string()),
             is_private: false,
-            body: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
-            })),
+            body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
             guard_expression: None,
             parameters: vec![
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    expression: Box::new(id!("a")),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+                    expression: Box::new(id!("b")),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("c".to_string()))),
+                    expression: Box::new(id!("c")),
                     default: None,
                 },
             ],
@@ -4718,23 +4606,19 @@ mod tests {
         let target = Block(vec![Expression::MacroDef(Macro {
             name: Identifier("my_macro".to_string()),
             is_private: false,
-            body: Box::new(Expression::BinaryOperation(BinaryOperation {
-                operator: BinaryOperator::Plus,
-                left: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                right: Box::new(Expression::Identifier(Identifier("b".to_string()))),
-            })),
+            body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
             guard_expression: None,
             parameters: vec![
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
+                    expression: Box::new(id!("a")),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("b".to_string()))),
+                    expression: Box::new(id!("b")),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(Expression::Identifier(Identifier("c".to_string()))),
+                    expression: Box::new(id!("c")),
                     default: None,
                 },
             ],
@@ -4748,14 +4632,14 @@ mod tests {
         let target = Block(vec![Expression::MacroDef(Macro {
             name: Identifier("my_macro".to_string()),
             is_private: false,
-            body: Box::new(Expression::Bool(true)),
+            body: Box::new(bool!(true)),
             guard_expression: Some(Box::new(Expression::Call(Call {
-                target: Box::new(Expression::Identifier(Identifier("is_integer".to_string()))),
+                target: Box::new(id!("is_integer")),
                 remote_callee: None,
-                arguments: vec![Expression::Identifier(Identifier("x".to_string()))],
+                arguments: vec![id!("x")],
             }))),
             parameters: vec![Parameter {
-                expression: Box::new(Expression::Identifier(Identifier("x".to_string()))),
+                expression: Box::new(id!("x")),
                 default: None,
             }],
         })]);
@@ -4789,10 +4673,10 @@ mod tests {
             name: Identifier("macro".to_string()),
             is_private: true,
             parameters: vec![Parameter {
-                expression: Box::new(Expression::Identifier(Identifier("a".to_string()))),
-                default: Some(Box::new(Expression::Integer(10))),
+                expression: Box::new(id!("a")),
+                default: Some(Box::new(int!(10))),
             }],
-            body: Box::new(Expression::Integer(10)),
+            body: Box::new(int!(10)),
             guard_expression: None,
         })]);
 
@@ -4873,6 +4757,24 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_custom_block_expressions() {
+        let code = r#"
+        schema "my_schema" do
+            field :name, :string
+        end
+        "#;
+        // call "schema" [do: (call field (:name, :string))]
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Sigil(Sigil {
+            name: "r".to_string(),
+            content: "hello".to_string(),
+            modifier: Some("i".to_string()),
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
@@ -4880,6 +4782,13 @@ mod tests {
 
 // TODO: protocols (defprotocol, defimpl)
 // Even though these should be treated as normal expressions as per the new parser ideas
+
+// TODO: support https://hexdocs.pm/elixir/syntax-reference.html#qualified-tuples
+// TODO: Support custom macros such as "schema"
+
+// TODO: refactor how do-end are parsed and handled according to https://hexdocs.pm/elixir/syntax-reference.html#do-end-blocks
+//
+// TODO: parse typespecs
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
