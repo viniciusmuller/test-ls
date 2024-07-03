@@ -292,6 +292,13 @@ struct Lambda {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct Sigil {
+    name: String,
+    content: String,
+    modifier: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum Expression {
     Bool(bool),
     Nil,
@@ -327,6 +334,7 @@ enum Expression {
     CaptureExpression(Box<Expression>),
     Lambda(Lambda),
     Grouping(Box<Expression>),
+    Sigil(Sigil),
     // TODO: try catch
     // TODO: receive after
     Quote(Quote),
@@ -1271,6 +1279,60 @@ fn try_parse_case_expression(
     Ok((Expression::Case(case), offset))
 }
 
+fn try_parse_sigil(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "sigil")?;
+    let (_, offset) = try_parse_grammar_name(code, tokens, offset, "~")?;
+    let (name_node, offset) = try_parse_grammar_name(code, tokens, offset, "sigil_name")?;
+    let sigil_name = extract_node_text(code, &name_node);
+
+    let sigil_open_delimiters = vec!["/", "|", "\"", "'", "(", " [", "{", "<"];
+    let sigil_close_delimiters = vec!["/", "|", "\"", "'", ")", " ]", "}", ">"];
+
+    let (_, offset) = try_parse_either_token(code, tokens, offset, sigil_open_delimiters)?;
+
+    let (sigil_content_node, offset) =
+        try_parse_grammar_name(code, tokens, offset, "quoted_content")?;
+    let sigil_content = extract_node_text(code, &sigil_content_node);
+
+    let (_, offset) = try_parse_either_token(code, tokens, offset, sigil_close_delimiters)?;
+
+    let (modifier, offset) = try_parse_grammar_name(code, tokens, offset, "sigil_modifiers")
+        .map(|(node, offset)| {
+            let sigil_content = extract_node_text(code, &node);
+            (Some(sigil_content), offset)
+        })
+        .unwrap_or((None, offset));
+
+    let sigil = Sigil {
+        name: sigil_name,
+        content: sigil_content,
+        modifier,
+    };
+
+    Ok((Expression::Sigil(sigil), offset))
+}
+
+// TODO: use in more places
+fn try_parse_either_token<'a>(
+    code: &'a str,
+    tokens: &'a Vec<Node>,
+    offset: u64,
+    allowed_tokens: Vec<&'static str>,
+) -> ParserResult<Node<'a>> {
+    for token in allowed_tokens {
+        if let Ok((node, offset)) = try_parse_grammar_name(code, tokens, offset, token) {
+            return Ok((node, offset));
+        }
+    }
+
+    Err(build_unexpected_token_error(
+        code,
+        offset,
+        "",
+        &tokens[offset as usize],
+    ))
+}
+
 fn try_parse_lambda(code: &str, tokens: &Vec<Node>, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "anonymous_function")?;
     let (_, offset) = try_parse_grammar_name(code, tokens, offset, "fn")?;
@@ -1826,6 +1888,7 @@ fn try_parse_expression<'a>(
         .or_else(|err| try_parse_cond_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_access_expression(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_lambda(code, tokens, offset).map_err(|_| err))
+        .or_else(|err| try_parse_sigil(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_quote(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_function_capture(code, tokens, offset).map_err(|_| err))
         .or_else(|err| try_parse_local_function_capture(code, tokens, offset).map_err(|_| err))
@@ -4735,11 +4798,85 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_sigils() {
+        let code = r#"
+        ~s(hey_there)
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Sigil(Sigil {
+            name: "s".to_string(),
+            content: "hey_there".to_string(),
+            modifier: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_sigils_different_separator() {
+        let code = r#"
+        ~r/regex^/
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Sigil(Sigil {
+            name: "r".to_string(),
+            content: "regex^".to_string(),
+            modifier: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_longer_sigil_name() {
+        let code = r#"
+        ~HTML|regex^|
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Sigil(Sigil {
+            name: "HTML".to_string(),
+            content: "regex^".to_string(),
+            modifier: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_sigil_interpolation() {
+        let code = r#"
+        ~HTML|with #{regex}^|
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Sigil(Sigil {
+            name: "HTML".to_string(),
+            content: "with #{regex}^".to_string(),
+            modifier: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_sigil_modifier() {
+        let code = r#"
+        ~r/hello/i
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Sigil(Sigil {
+            name: "r".to_string(),
+            content: "hello".to_string(),
+            modifier: Some("i".to_string()),
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
 // TODO: support `for` (tricky one)
-// TODO: parse sigils
 
 // TODO: protocols (defprotocol, defimpl)
 // Even though these should be treated as normal expressions as per the new parser ideas
