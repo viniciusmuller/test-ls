@@ -106,17 +106,17 @@ impl<'a> PState<'a> {
     }
 
     fn parse(&mut self) -> ParserResult<Expression> {
-        parse_all_tokens(&self, 0, try_parse_expression)
+        parse_all_tokens(self, 0, try_parse_expression)
             .map(|(expressions, offset)| (Expression::Block(expressions), offset))
     }
 
-    fn is_eof(&self, offset: u64) -> bool {
-        self.tokens.len() == offset as usize
+    fn is_eof(&self, offset: usize) -> bool {
+        self.tokens.len() == offset
     }
 }
 
-type ParserResult<T> = Result<(T, u64), ParseError>;
-type Parser<'a, T> = fn(&'a PState<'a>, u64) -> ParserResult<T>;
+type ParserResult<T> = Result<(T, usize), ParseError>;
+type Parser<'a, T> = fn(&'a PState<'a>, usize) -> ParserResult<T>;
 
 /// Check https://hexdocs.pm/elixir/1.17.1/operators.html for more info
 ///
@@ -380,7 +380,7 @@ struct ParseError {
     error_type: ErrorType,
     start: Point,
     end: Point,
-    offset: u64,
+    offset: usize,
     file: String,
 }
 
@@ -519,7 +519,7 @@ fn flatten_node_children<'a>(node: Node<'a>, vec: &mut Vec<Node<'a>>) {
     }
 }
 
-fn try_parse_module(state: &PState, offset: u64) -> Result<(Expression, u64), ParseError> {
+fn try_parse_module(state: &PState, offset: usize) -> Result<(Expression, usize), ParseError> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "defmodule")?;
 
@@ -537,7 +537,7 @@ fn try_parse_module(state: &PState, offset: u64) -> Result<(Expression, u64), Pa
     Ok((module, offset))
 }
 
-fn try_parse_capture_expression_variable(state: &PState, offset: u64) -> ParserResult<Identifier> {
+fn try_parse_capture_expression_variable(state: &PState, offset: usize) -> ParserResult<Identifier> {
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "&")?;
     let (node, offset) = try_parse_grammar_name(state, offset, "integer")?;
@@ -545,7 +545,7 @@ fn try_parse_capture_expression_variable(state: &PState, offset: u64) -> ParserR
     Ok((Identifier(format!("&{}", content)), offset))
 }
 
-fn try_parse_capture_expression(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_capture_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "&")?;
 
@@ -567,7 +567,7 @@ fn try_parse_capture_expression(state: &PState, offset: u64) -> ParserResult<Exp
     Ok((capture, offset))
 }
 
-fn try_parse_remote_function_capture(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_remote_function_capture(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "&")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
@@ -594,7 +594,7 @@ fn try_parse_remote_function_capture(state: &PState, offset: u64) -> ParserResul
     Ok((capture, offset))
 }
 
-fn try_parse_local_function_capture(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_local_function_capture(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "&")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
@@ -611,12 +611,12 @@ fn try_parse_local_function_capture(state: &PState, offset: u64) -> ParserResult
     Ok((capture, offset))
 }
 
-fn try_parse_quote(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_quote(state: &PState, offset: usize) -> ParserResult<Expression> {
     // TODO: try_pares_do_block with oneline support should do the trick here for both cases
     try_parse_quote_oneline(state, offset).or_else(|_| try_parse_quote_block(state, offset))
 }
 
-fn try_parse_quote_block(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_quote_block(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "quote")?;
 
@@ -640,7 +640,7 @@ fn try_parse_quote_block(state: &PState, offset: u64) -> ParserResult<Expression
     Ok((capture, offset))
 }
 
-fn try_parse_quote_oneline(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_quote_oneline(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (quote_node, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "quote")?;
 
@@ -692,7 +692,7 @@ fn try_parse_quote_oneline(state: &PState, offset: u64) -> ParserResult<Expressi
 }
 
 fn try_extract_do_keyword(
-    offset: u64,
+    offset: usize,
     pair: Option<(Expression, Expression)>,
     start_node: &Node,
 ) -> ParserResult<Expression> {
@@ -708,7 +708,7 @@ fn try_extract_do_keyword(
     }
 }
 
-fn try_parse_keyword_list(state: &PState, offset: u64) -> ParserResult<List> {
+fn try_parse_keyword_list(state: &PState, offset: usize) -> ParserResult<List> {
     let (_, offset) = try_parse_grammar_name(state, offset, "list")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "[")?;
     let (options, offset) = try_parse_keyword_expressions(state, offset)?;
@@ -716,7 +716,7 @@ fn try_parse_keyword_list(state: &PState, offset: u64) -> ParserResult<List> {
     Ok((options, offset))
 }
 
-fn try_parse_function_definition(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_function_definition(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
 
     let (offset, is_private) = match try_parse_keyword(state, offset, "defp") {
@@ -792,7 +792,7 @@ fn try_parse_function_definition(state: &PState, offset: u64) -> ParserResult<Ex
     Ok((function, offset))
 }
 
-fn try_parse_do_keyword(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_do_keyword(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (mut list, offset) = try_parse_keyword_expressions(state, offset)
         .or_else(|_| try_parse_keyword_list(state, offset))?;
 
@@ -805,19 +805,19 @@ fn try_parse_do_keyword(state: &PState, offset: u64) -> ParserResult<Expression>
             } else {
                 // TODO: might have to check bounds here
                 // TODO: figure out a better way of always checking bounds
-                let node = state.tokens[offset as usize];
-                return Err(build_unexpected_token_error(offset, &node));
+                let node = state.tokens[offset];
+                Err(build_unexpected_token_error(offset, &node))
             }
         }
         _ => {
-            let node = state.tokens[offset as usize];
-            return Err(build_unexpected_token_error(offset, &node));
+            let node = state.tokens[offset];
+            Err(build_unexpected_token_error(offset, &node))
         }
     }
 }
 
 // TODO: generalize all of this function and macro definition code
-fn try_parse_macro_definition(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_macro_definition(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
 
     let (offset, is_private) = match try_parse_keyword(state, offset, "defmacrop") {
@@ -895,7 +895,7 @@ fn try_parse_macro_definition(state: &PState, offset: u64) -> ParserResult<Expre
 
 fn try_parse_function_guard(
     state: &PState,
-    offset: u64,
+    offset: usize,
 ) -> ParserResult<(Expression, Vec<Parameter>, Identifier)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
@@ -914,7 +914,7 @@ fn try_parse_function_guard(
     Ok(((guard_expression, parameters, function_name), offset))
 }
 
-fn try_parse_parameters(state: &PState, offset: u64) -> ParserResult<Vec<Parameter>> {
+fn try_parse_parameters(state: &PState, offset: usize) -> ParserResult<Vec<Parameter>> {
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
 
     let (offset, has_parenthesis) = match try_parse_grammar_name(state, offset, "(") {
@@ -939,7 +939,7 @@ fn try_parse_parameters(state: &PState, offset: u64) -> ParserResult<Vec<Paramet
     Ok((parameters, offset))
 }
 
-fn try_parse_parameter(state: &PState, offset: u64) -> ParserResult<Parameter> {
+fn try_parse_parameter(state: &PState, offset: usize) -> ParserResult<Parameter> {
     match try_parse_parameter_default_value(state, offset) {
         Ok(result) => Ok(result),
         Err(_) => try_parse_expression(state, offset)
@@ -958,7 +958,7 @@ fn try_parse_parameter(state: &PState, offset: u64) -> ParserResult<Parameter> {
     }
 }
 
-fn try_parse_parameter_default_value(state: &PState, offset: u64) -> ParserResult<Parameter> {
+fn try_parse_parameter_default_value(state: &PState, offset: usize) -> ParserResult<Parameter> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (expression, offset) = try_parse_expression(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, r#"\\"#)?;
@@ -974,7 +974,7 @@ fn try_parse_parameter_default_value(state: &PState, offset: u64) -> ParserResul
 
 fn try_parse_grammar_name<'a>(
     state: &'a PState,
-    offset: u64,
+    offset: usize,
     expected: &str,
 ) -> ParserResult<Node<'a>> {
     if state.is_eof(offset) {
@@ -982,7 +982,7 @@ fn try_parse_grammar_name<'a>(
         return Err(build_unexpected_token_error(offset, node));
     }
 
-    let token = state.tokens[offset as usize];
+    let token = state.tokens[offset];
     let actual = token.grammar_name();
 
     if actual == expected {
@@ -992,8 +992,8 @@ fn try_parse_grammar_name<'a>(
     }
 }
 
-fn try_parse_identifier(state: &PState, offset: u64) -> ParserResult<Identifier> {
-    let token = state.tokens[offset as usize];
+fn try_parse_identifier(state: &PState, offset: usize) -> ParserResult<Identifier> {
+    let token = state.tokens[offset];
     let actual = token.grammar_name();
     let identifier_name = extract_node_text(&state.code, &token);
 
@@ -1017,8 +1017,8 @@ fn try_parse_identifier(state: &PState, offset: u64) -> ParserResult<Identifier>
     }
 }
 
-fn try_parse_keyword(state: &PState, offset: u64, keyword: &str) -> ParserResult<Identifier> {
-    let token = state.tokens[offset as usize];
+fn try_parse_keyword(state: &PState, offset: usize, keyword: &str) -> ParserResult<Identifier> {
+    let token = state.tokens[offset];
     let identifier_name = extract_node_text(&state.code, &token);
     let grammar_name = token.grammar_name();
 
@@ -1029,14 +1029,14 @@ fn try_parse_keyword(state: &PState, offset: u64, keyword: &str) -> ParserResult
     }
 }
 
-fn try_consume<'a, T>(state: &'a PState, offset: u64, parser: Parser<'a, T>) -> u64 {
+fn try_consume<'a, T>(state: &'a PState, offset: usize, parser: Parser<'a, T>) -> usize {
     match parser(state, offset) {
         Ok((_node, new_offset)) => new_offset,
         Err(_) => offset,
     }
 }
 
-fn try_parse_remote_call(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_remote_call(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "dot")?;
     let (remote_callee, offset) = try_parse_expression(state, offset)?;
@@ -1064,7 +1064,7 @@ fn try_parse_remote_call(state: &PState, offset: u64) -> ParserResult<Expression
 }
 
 // TODO: unify with try_parse_remote_call
-fn try_parse_local_call(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_local_call(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (local_callee, offset) = try_parse_identifier(state, offset)?;
 
@@ -1090,7 +1090,7 @@ fn try_parse_local_call(state: &PState, offset: u64) -> ParserResult<Expression>
     Ok((call, offset))
 }
 
-fn try_parse_call_arguments(state: &PState, offset: u64) -> ParserResult<Vec<Expression>> {
+fn try_parse_call_arguments(state: &PState, offset: usize) -> ParserResult<Vec<Expression>> {
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
 
     let (offset, has_parenthesis) = match try_parse_grammar_name(state, offset, "(") {
@@ -1119,12 +1119,12 @@ fn try_parse_call_arguments(state: &PState, offset: u64) -> ParserResult<Vec<Exp
 }
 
 // TODO: use this to parse expressions sep by comma in the function body
-fn parse_expressions_sep_by_comma(state: &PState, offset: u64) -> ParserResult<Vec<Expression>> {
+fn parse_expressions_sep_by_comma(state: &PState, offset: usize) -> ParserResult<Vec<Expression>> {
     let sep_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
     try_parse_sep_by(state, offset, try_parse_expression, sep_parser)
 }
 
-fn try_parse_keyword_expressions(state: &PState, offset: u64) -> ParserResult<List> {
+fn try_parse_keyword_expressions(state: &PState, offset: usize) -> ParserResult<List> {
     let (_, offset) = try_parse_grammar_name(state, offset, "keywords")?;
     let sep_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
 
@@ -1149,7 +1149,7 @@ fn try_parse_keyword_expressions(state: &PState, offset: u64) -> ParserResult<Li
 
 fn try_parse_sep_by<'a, T, S>(
     state: &'a PState,
-    offset: u64,
+    offset: usize,
     item_parser: Parser<'a, T>,
     sep_parser: Parser<'a, S>,
 ) -> ParserResult<Vec<T>> {
@@ -1186,7 +1186,7 @@ fn try_parse_sep_by<'a, T, S>(
     Ok((expressions, offset_mut))
 }
 
-fn try_parse_keyword_pair(state: &PState, offset: u64) -> ParserResult<(Expression, Expression)> {
+fn try_parse_keyword_pair(state: &PState, offset: usize) -> ParserResult<(Expression, Expression)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "pair")?;
 
     let (atom, offset) = match try_parse_grammar_name(state, offset, "keyword") {
@@ -1210,7 +1210,7 @@ fn try_parse_keyword_pair(state: &PState, offset: u64) -> ParserResult<(Expressi
     Ok((pair, offset))
 }
 
-fn try_parse_quoted_keyword(state: &PState, offset: u64) -> ParserResult<Atom> {
+fn try_parse_quoted_keyword(state: &PState, offset: usize) -> ParserResult<Atom> {
     let (_, offset) = try_parse_grammar_name(state, offset, "quoted_keyword")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "\"")?;
     let (quoted_content, offset) = try_parse_quoted_content(state, offset)?;
@@ -1218,7 +1218,7 @@ fn try_parse_quoted_keyword(state: &PState, offset: u64) -> ParserResult<Atom> {
     Ok((Atom(quoted_content), offset))
 }
 
-fn try_parse_cond_expression(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_cond_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "cond")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "do_block")?;
@@ -1245,7 +1245,7 @@ fn try_parse_cond_expression(state: &PState, offset: u64) -> ParserResult<Expres
     Ok((Expression::Cond(case), offset))
 }
 
-fn try_parse_access_expression(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_access_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "access_call")?;
     let (target, offset) = try_parse_expression(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "[")?;
@@ -1260,7 +1260,7 @@ fn try_parse_access_expression(state: &PState, offset: u64) -> ParserResult<Expr
     Ok((Expression::Access(access), offset))
 }
 
-fn try_parse_case_expression(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_case_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "case")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
@@ -1282,7 +1282,7 @@ fn try_parse_case_expression(state: &PState, offset: u64) -> ParserResult<Expres
     Ok((Expression::Case(case), offset))
 }
 
-fn try_parse_sigil(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "sigil")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "~")?;
     let (name_node, offset) = try_parse_grammar_name(state, offset, "sigil_name")?;
@@ -1317,7 +1317,7 @@ fn try_parse_sigil(state: &PState, offset: u64) -> ParserResult<Expression> {
 // TODO: use in more places
 fn try_parse_either_token<'a>(
     state: &'a PState,
-    offset: u64,
+    offset: usize,
     allowed_tokens: &Vec<&'static str>,
 ) -> ParserResult<Node<'a>> {
     for token in allowed_tokens {
@@ -1328,11 +1328,11 @@ fn try_parse_either_token<'a>(
 
     Err(build_unexpected_token_error(
         offset,
-        &state.tokens[offset as usize],
+        &state.tokens[offset],
     ))
 }
 
-fn try_parse_lambda(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_lambda(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "anonymous_function")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "fn")?;
 
@@ -1351,7 +1351,7 @@ fn try_parse_lambda(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((Expression::Lambda(lambda), offset))
 }
 
-fn try_parse_lambda_simple_clause(state: &PState, offset: u64) -> ParserResult<LambdaClause> {
+fn try_parse_lambda_simple_clause(state: &PState, offset: usize) -> ParserResult<LambdaClause> {
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
@@ -1370,7 +1370,7 @@ fn try_parse_lambda_simple_clause(state: &PState, offset: u64) -> ParserResult<L
     Ok((lambda_clause, offset))
 }
 
-fn try_parse_lambda_guard_clause(state: &PState, offset: u64) -> ParserResult<LambdaClause> {
+fn try_parse_lambda_guard_clause(state: &PState, offset: usize) -> ParserResult<LambdaClause> {
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
@@ -1393,7 +1393,7 @@ fn try_parse_lambda_guard_clause(state: &PState, offset: u64) -> ParserResult<La
     Ok((lambda_clause, offset))
 }
 
-fn try_parse_stab(state: &PState, offset: u64) -> ParserResult<(Expression, Expression)> {
+fn try_parse_stab(state: &PState, offset: usize) -> ParserResult<(Expression, Expression)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (left, offset) = try_parse_expression(state, offset)?;
@@ -1402,7 +1402,7 @@ fn try_parse_stab(state: &PState, offset: u64) -> ParserResult<(Expression, Expr
     Ok(((left, body), offset))
 }
 
-fn try_parse_stab_body(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_stab_body(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "body")?;
 
     let end_parser = |state, offset| {
@@ -1420,7 +1420,7 @@ fn try_parse_stab_body(state: &PState, offset: u64) -> ParserResult<Expression> 
     Ok((body, offset))
 }
 
-fn try_parse_case_arm(state: &PState, offset: u64) -> ParserResult<CaseArm> {
+fn try_parse_case_arm(state: &PState, offset: usize) -> ParserResult<CaseArm> {
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
 
     if let Ok(((left, right, guard), offset)) = try_parse_case_arm_guard(state, offset) {
@@ -1449,7 +1449,7 @@ fn try_parse_case_arm(state: &PState, offset: u64) -> ParserResult<CaseArm> {
 
 fn try_parse_case_arm_guard(
     state: &PState,
-    offset: u64,
+    offset: usize,
 ) -> ParserResult<(Expression, Expression, Expression)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
@@ -1466,12 +1466,12 @@ fn try_parse_case_arm_guard(
 // TODO: make another version of parse_do_block that has the same core logic but work specifically
 // for keyword syntax
 
-fn try_parse_do(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_do(state: &PState, offset: usize) -> ParserResult<Expression> {
     try_parse_do_block(state, offset).or_else(|_| try_parse_do_keyword(state, offset))
 }
 
 /// Parses a sugarized do block and returns a desugarized keyword structure
-fn try_parse_do_block(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_do_block(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "do_block")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "do")?;
 
@@ -1556,13 +1556,13 @@ fn try_parse_do_block(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((Expression::List(base_list), offset))
 }
 
-fn try_parse_atom(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_atom(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (atom_node, offset) = try_parse_grammar_name(state, offset, "atom")?;
     let atom_string = extract_node_text(&state.code, &atom_node)[1..].to_string();
     Ok((Expression::Atom(Atom(atom_string)), offset))
 }
 
-fn try_parse_quoted_atom(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_quoted_atom(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "quoted_atom")?;
     let (_, offset) = try_parse_grammar_name(state, offset, ":")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "\"")?;
@@ -1571,7 +1571,7 @@ fn try_parse_quoted_atom(state: &PState, offset: u64) -> ParserResult<Expression
     Ok((Expression::Atom(Atom(atom_content)), offset))
 }
 
-fn try_parse_bool(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_bool(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "boolean")?;
 
     let (boolean_result, offset) = match try_parse_grammar_name(state, offset, "true") {
@@ -1589,7 +1589,7 @@ fn try_parse_bool(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((Expression::Bool(boolean_result), offset))
 }
 
-fn try_parse_nil(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_nil(state: &PState, offset: usize) -> ParserResult<Expression> {
     // INFO: for some reason treesitter-elixir outputs nil twice with the same span for each nil,
     // so we consume both
     let (_, offset) = try_parse_grammar_name(state, offset, "nil")?;
@@ -1597,7 +1597,7 @@ fn try_parse_nil(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((Expression::Nil, offset))
 }
 
-fn try_parse_map(state: &PState, offset: u64) -> ParserResult<Map> {
+fn try_parse_map(state: &PState, offset: usize) -> ParserResult<Map> {
     let (_, offset) = try_parse_grammar_name(state, offset, "map")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
@@ -1631,7 +1631,7 @@ fn try_parse_map(state: &PState, offset: u64) -> ParserResult<Map> {
     Ok((map, offset))
 }
 
-fn try_parse_struct(state: &PState, offset: u64) -> ParserResult<Struct> {
+fn try_parse_struct(state: &PState, offset: usize) -> ParserResult<Struct> {
     let (_, offset) = try_parse_grammar_name(state, offset, "map")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "struct")?;
@@ -1656,7 +1656,7 @@ fn try_parse_struct(state: &PState, offset: u64) -> ParserResult<Struct> {
     Ok((s, offset))
 }
 
-fn try_parse_map_update(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_map_update(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (updated, offset) = try_parse_expression(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "|")?;
@@ -1682,7 +1682,7 @@ fn extract_key_value_from_tuple(expr: &mut Expression) -> (Expression, Expressio
     }
 }
 
-fn try_parse_grouping(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_grouping(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "block")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "(")?;
     let (expression, offset) = try_parse_expression(state, offset)?;
@@ -1691,7 +1691,7 @@ fn try_parse_grouping(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((grouping, offset))
 }
 
-fn try_parse_list(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_list(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "list")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "[")?;
 
@@ -1723,7 +1723,7 @@ fn try_parse_list(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((list, offset))
 }
 
-fn try_parse_list_cons(state: &PState, offset: u64) -> ParserResult<(Expression, Expression)> {
+fn try_parse_list_cons(state: &PState, offset: usize) -> ParserResult<(Expression, Expression)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (expr_before_cons, offset) = try_parse_expression(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "|")?;
@@ -1733,7 +1733,7 @@ fn try_parse_list_cons(state: &PState, offset: u64) -> ParserResult<(Expression,
 
 fn try_parse_specific_binary_operator(
     state: &PState,
-    offset: u64,
+    offset: usize,
     expected_operator: &str,
 ) -> ParserResult<(Expression, Expression)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
@@ -1743,7 +1743,7 @@ fn try_parse_specific_binary_operator(
     Ok(((left, right), offset))
 }
 
-fn try_parse_attribute_definition(state: &PState, offset: u64) -> ParserResult<Attribute> {
+fn try_parse_attribute_definition(state: &PState, offset: usize) -> ParserResult<Attribute> {
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "@")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
@@ -1760,14 +1760,14 @@ fn try_parse_attribute_definition(state: &PState, offset: u64) -> ParserResult<A
     ))
 }
 
-fn try_parse_attribute_reference(state: &PState, offset: u64) -> ParserResult<Identifier> {
+fn try_parse_attribute_reference(state: &PState, offset: usize) -> ParserResult<Identifier> {
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "@")?;
     let (attribute_name, offset) = try_parse_identifier(state, offset)?;
     Ok((attribute_name, offset))
 }
 
-fn try_parse_tuple(state: &PState, offset: u64) -> Result<(Tuple, u64), ParseError> {
+fn try_parse_tuple(state: &PState, offset: usize) -> Result<(Tuple, usize), ParseError> {
     let (_, offset) = try_parse_grammar_name(state, offset, "tuple")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
     let (expressions, offset) = match parse_expressions_sep_by_comma(state, offset) {
@@ -1780,7 +1780,7 @@ fn try_parse_tuple(state: &PState, offset: u64) -> Result<(Tuple, u64), ParseErr
     Ok((tuple, offset))
 }
 
-fn try_parse_integer(state: &PState, offset: u64) -> Result<(usize, u64), ParseError> {
+fn try_parse_integer(state: &PState, offset: usize) -> Result<(usize, usize), ParseError> {
     let (integer_node, offset) = try_parse_grammar_name(state, offset, "integer")?;
     let integer_text = extract_node_text(&state.code, &integer_node);
     let integer_text = integer_text.replace('_', "");
@@ -1798,7 +1798,7 @@ fn try_parse_integer(state: &PState, offset: u64) -> Result<(usize, u64), ParseE
     Ok((result, offset))
 }
 
-fn try_parse_float(state: &PState, offset: u64) -> Result<(Float, u64), ParseError> {
+fn try_parse_float(state: &PState, offset: usize) -> Result<(Float, usize), ParseError> {
     let (float_node, offset) = try_parse_grammar_name(state, offset, "float")?;
     let float_text = extract_node_text(&state.code, &float_node);
     let float_text = float_text.replace('_', "");
@@ -1807,7 +1807,7 @@ fn try_parse_float(state: &PState, offset: u64) -> Result<(Float, u64), ParseErr
     Ok((Float(f), offset))
 }
 
-fn try_parse_string(state: &PState, offset: u64) -> Result<(String, u64), ParseError> {
+fn try_parse_string(state: &PState, offset: usize) -> Result<(String, usize), ParseError> {
     let (_, offset) = try_parse_grammar_name(state, offset, "string")?;
     let quotes = vec!["\"", "\"\"\""];
     let (_, offset) = try_parse_either_token(state, offset, &quotes)?;
@@ -1824,7 +1824,7 @@ fn try_parse_string(state: &PState, offset: u64) -> Result<(String, u64), ParseE
 
 /// Consumes everything from a quoted_content and returns it as a concatenated string.
 /// It concatenates escape sequences and interpolations into the string
-fn try_parse_quoted_content(state: &PState, offset: u64) -> ParserResult<String> {
+fn try_parse_quoted_content(state: &PState, offset: usize) -> ParserResult<String> {
     let parser = |state, offset| {
         let (string_node, offset) = try_parse_grammar_name(state, offset, "quoted_content")
             .or_else(|_| try_parse_grammar_name(state, offset, "escape_sequence"))
@@ -1845,7 +1845,7 @@ fn try_parse_quoted_content(state: &PState, offset: u64) -> ParserResult<String>
 
 // interpolations are discarded for now
 // TODO: do not discard interpolations
-fn try_parse_interpolation<'a>(state: &'a PState, offset: u64) -> ParserResult<Node<'a>> {
+fn try_parse_interpolation<'a>(state: &'a PState, offset: usize) -> ParserResult<Node<'a>> {
     let (interpolation_node, offset) = try_parse_grammar_name(state, offset, "interpolation")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "#{")?;
     let (_, offset) = try_parse_expression(state, offset)?;
@@ -1857,13 +1857,13 @@ fn try_parse_interpolation<'a>(state: &'a PState, offset: u64) -> ParserResult<N
 /// Grammar_name = alias means module names in the TS elixir grammar.
 /// e.g: ThisIsAnAlias, Elixir.ThisIsAlsoAnAlias
 /// as these are also technically atoms, we return them as atoms
-fn try_parse_module_name(state: &PState, offset: u64) -> ParserResult<Atom> {
+fn try_parse_module_name(state: &PState, offset: usize) -> ParserResult<Atom> {
     let (atom_node, offset) = try_parse_grammar_name(state, offset, "alias")?;
     let atom_string = extract_node_text(&state.code, &atom_node);
     Ok((Atom(atom_string), offset))
 }
 
-fn try_parse_expression(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     try_parse_module(state, offset)
         .or_else(|err| try_parse_grouping(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_remote_call(state, offset).map_err(|_| err))
@@ -1955,7 +1955,7 @@ fn try_parse_expression(state: &PState, offset: u64) -> ParserResult<Expression>
         })
 }
 
-fn try_parse_unary_operator(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_unary_operator(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (operator, offset) = try_parse_unary_operator_node(state, offset)?;
     let (operand, offset) = try_parse_expression(state, offset)?;
@@ -1966,7 +1966,7 @@ fn try_parse_unary_operator(state: &PState, offset: u64) -> ParserResult<Express
     Ok((operation, offset))
 }
 
-fn try_parse_binary_operator(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_binary_operator(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (left, offset) = try_parse_expression(state, offset)?;
     let (operator, offset) = try_parse_binary_operator_node(state, offset)?;
@@ -1979,7 +1979,7 @@ fn try_parse_binary_operator(state: &PState, offset: u64) -> ParserResult<Expres
     Ok((operation, offset))
 }
 
-fn try_parse_if_expression(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_if_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "if")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
@@ -1999,7 +1999,7 @@ fn try_parse_if_expression(state: &PState, offset: u64) -> ParserResult<Expressi
     Ok((if_expr, offset))
 }
 
-fn try_parse_unless_expression(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_unless_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "unless")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
@@ -2038,7 +2038,7 @@ fn keyword_fetch(list: &List, target_key: Expression) -> Option<Expression> {
     None
 }
 
-fn try_parse_require(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_require(state: &PState, offset: usize) -> ParserResult<Expression> {
     let ((required_module, options), offset) = try_parse_module_operator(state, offset, "require")?;
 
     let require = Expression::Require(Require {
@@ -2049,7 +2049,7 @@ fn try_parse_require(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((require, offset))
 }
 
-fn try_parse_alias(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_alias(state: &PState, offset: usize) -> ParserResult<Expression> {
     let ((aliased_module, options), offset) = try_parse_module_operator(state, offset, "alias")?;
 
     let require = Expression::Alias(Alias {
@@ -2060,7 +2060,7 @@ fn try_parse_alias(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((require, offset))
 }
 
-fn try_parse_use(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_use(state: &PState, offset: usize) -> ParserResult<Expression> {
     let ((used_module, options), offset) = try_parse_module_operator(state, offset, "use")?;
 
     let require = Expression::Use(Use {
@@ -2071,7 +2071,7 @@ fn try_parse_use(state: &PState, offset: u64) -> ParserResult<Expression> {
     Ok((require, offset))
 }
 
-fn try_parse_dot_access(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_dot_access(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "dot")?;
     let (body, offset) = try_parse_expression(state, offset)?;
@@ -2086,7 +2086,7 @@ fn try_parse_dot_access(state: &PState, offset: u64) -> ParserResult<Expression>
     Ok((dot_access, offset))
 }
 
-fn try_parse_import(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_import(state: &PState, offset: usize) -> ParserResult<Expression> {
     let ((imported_module, options), offset) = try_parse_module_operator(state, offset, "import")?;
 
     let require = Expression::Import(Import {
@@ -2100,7 +2100,7 @@ fn try_parse_import(state: &PState, offset: u64) -> ParserResult<Expression> {
 /// Module operator == import, use, require, alias
 fn try_parse_module_operator(
     state: &PState,
-    offset: u64,
+    offset: usize,
     target: &str,
 ) -> ParserResult<(Atom, Option<List>)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
@@ -2119,8 +2119,8 @@ fn try_parse_module_operator(
     Ok(((target_module, options), offset))
 }
 
-fn try_parse_unary_operator_node(state: &PState, offset: u64) -> ParserResult<UnaryOperator> {
-    let token = state.tokens[offset as usize];
+fn try_parse_unary_operator_node(state: &PState, offset: usize) -> ParserResult<UnaryOperator> {
+    let token = state.tokens[offset];
     let operator = token.grammar_name();
     match operator {
         "+" => Ok((UnaryOperator::Plus, offset + 1)),
@@ -2132,8 +2132,8 @@ fn try_parse_unary_operator_node(state: &PState, offset: u64) -> ParserResult<Un
     }
 }
 
-fn try_parse_binary_operator_node(state: &PState, offset: u64) -> ParserResult<BinaryOperator> {
-    let token = state.tokens[offset as usize];
+fn try_parse_binary_operator_node(state: &PState, offset: usize) -> ParserResult<BinaryOperator> {
+    let token = state.tokens[offset];
     let operator = token.grammar_name();
     match operator {
         "=" => Ok((BinaryOperator::Match, offset + 1)),
@@ -2165,7 +2165,7 @@ fn try_parse_binary_operator_node(state: &PState, offset: u64) -> ParserResult<B
     }
 }
 
-fn try_parse_range(state: &PState, offset: u64) -> ParserResult<Expression> {
+fn try_parse_range(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
 
     let (offset, has_step) = match try_parse_grammar_name(state, offset, "binary_operator") {
@@ -2196,7 +2196,7 @@ fn try_parse_range(state: &PState, offset: u64) -> ParserResult<Expression> {
 
 fn try_parse_custom_operator(
     token: &Node,
-    offset: u64,
+    offset: usize,
     operator_string: &str,
 ) -> Result<String, ParseError> {
     let custom_operators = [
@@ -2210,7 +2210,7 @@ fn try_parse_custom_operator(
     }
 }
 
-fn build_unexpected_token_error(offset: u64, actual_token: &Node) -> ParseError {
+fn build_unexpected_token_error(offset: usize, actual_token: &Node) -> ParseError {
     let start = actual_token.start_position();
     let end = actual_token.end_position();
 
@@ -2229,7 +2229,7 @@ fn build_unexpected_token_error(offset: u64, actual_token: &Node) -> ParseError 
     }
 }
 
-fn build_unexpected_keyword_error(offset: u64, actual_token: &Node) -> ParseError {
+fn build_unexpected_keyword_error(offset: usize, actual_token: &Node) -> ParseError {
     let start = actual_token.start_position();
     let end = actual_token.end_position();
 
@@ -2250,7 +2250,7 @@ fn build_unexpected_keyword_error(offset: u64, actual_token: &Node) -> ParseErro
 
 fn parse_until<'a, T: Debug, E>(
     state: &'a PState,
-    offset: u64,
+    offset: usize,
     parser: Parser<'a, T>,
     end_parser: Parser<'a, E>,
 ) -> ParserResult<Vec<T>> {
@@ -2273,7 +2273,7 @@ fn parse_until<'a, T: Debug, E>(
 
 fn parse_all_tokens<'a, T>(
     state: &'a PState,
-    offset: u64,
+    offset: usize,
     parser: Parser<'a, T>,
 ) -> ParserResult<Vec<T>> {
     if state.tokens.is_empty() {
