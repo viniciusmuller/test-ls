@@ -100,7 +100,7 @@ impl<'a> PState<'a> {
         PState {
             tokens,
             code: code.to_owned(),
-            expecting_do: RefCell::new(false),
+            expecting_do: RefCell::new(true),
         }
     }
 
@@ -525,7 +525,7 @@ fn try_parse_module(state: &PState, offset: u64) -> Result<(Expression, u64), Pa
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (module_name, offset) = try_parse_module_name(state, offset)?;
 
-    let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
+    let (do_block_kw, offset) = try_parse_do(state, offset)?;
     let list = extract_list(do_block_kw);
     let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
@@ -627,7 +627,7 @@ fn try_parse_quote_block(state: &PState, offset: u64) -> ParserResult<Expression
         .map(|(opts, offset)| (Some(opts), offset))
         .unwrap_or((None, offset));
 
-    let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
+    let (do_block_kw, offset) = try_parse_do(state, offset)?;
     let list = extract_list(do_block_kw);
     let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
@@ -741,7 +741,10 @@ fn try_parse_function_definition(state: &PState, offset: u64) -> ParserResult<Ex
     if let Ok(((guard_expr, parameters, function_name), offset)) =
         try_parse_function_guard(state, offset)
     {
-        let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
+        let offset = try_consume(state, offset, |state, offset| {
+            try_parse_grammar_name(state, offset, ",")
+        });
+        let (do_block_kw, offset) = try_parse_do(state, offset)?;
         let list = extract_list(do_block_kw);
         let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
@@ -771,7 +774,7 @@ fn try_parse_function_definition(state: &PState, offset: u64) -> ParserResult<Ex
         // TODO: refactor this branch
         (first_pair.1, offset)
     } else {
-        let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
+        let (do_block_kw, offset) = try_parse_do(state, offset)?;
         let list = extract_list(do_block_kw);
         let do_block = keyword_fetch(&list, atom!("do")).unwrap();
         (do_block, offset)
@@ -800,10 +803,14 @@ fn try_parse_do_keyword(state: &PState, offset: u64) -> ParserResult<Expression>
                 Ok((list!(Expression::Tuple(tuple)), offset))
             } else {
                 // TODO: return normal error here and dont panic
-                panic!("invalid tuple keyword was parsed")
+                let node = state.tokens[offset as usize];
+                return Err(build_unexpected_token_error(offset, &node));
             }
         }
-        _ => panic!("invalid tuple keyword was parsed"),
+        _ => {
+            let node = state.tokens[offset as usize];
+            return Err(build_unexpected_token_error(offset, &node));
+        }
     }
 }
 
@@ -836,12 +843,8 @@ fn try_parse_macro_definition(state: &PState, offset: u64) -> ParserResult<Expre
     {
         let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
         let offset = try_consume(state, offset, comma_parser);
-        dbg!(state.tokens[offset as usize]);
 
-        let (do_block_kw, offset) = try_parse_do_block(state, offset)
-            .or_else(|_| dbg!(try_parse_do_keyword(state, offset)))?;
-
-        dbg!(&do_block_kw);
+        let (do_block_kw, offset) = try_parse_do(state, offset)?;
 
         let list = extract_list(do_block_kw);
         let do_block = keyword_fetch(&list, atom!("do")).unwrap();
@@ -871,7 +874,7 @@ fn try_parse_macro_definition(state: &PState, offset: u64) -> ParserResult<Expre
         let first_pair = keywords.remove(0);
         (first_pair.1, offset)
     } else {
-        let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
+        let (do_block_kw, offset) = try_parse_do(state, offset)?;
         let list = extract_list(do_block_kw);
         let do_block = keyword_fetch(&list, atom!("do")).unwrap();
         (do_block, offset)
@@ -1035,7 +1038,7 @@ fn try_parse_remote_call(state: &PState, offset: u64) -> ParserResult<Expression
     let (mut arguments, offset) = try_parse_call_arguments(state, offset)?;
 
     let (do_block, offset) = if *state.expecting_do.borrow() {
-        try_parse_do_block(state, offset)
+        try_parse_do(state, offset)
             .map(|(block, offset)| (Some(block), offset))
             .unwrap_or((None, offset))
     } else {
@@ -1053,8 +1056,6 @@ fn try_parse_remote_call(state: &PState, offset: u64) -> ParserResult<Expression
     Ok((call, offset))
 }
 
-// TODO: introduce Parser struct
-
 // TODO: unify with try_parse_remote_call
 fn try_parse_local_call(state: &PState, offset: u64) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
@@ -1064,7 +1065,7 @@ fn try_parse_local_call(state: &PState, offset: u64) -> ParserResult<Expression>
         try_parse_call_arguments(state, offset).unwrap_or((vec![], offset));
 
     let (do_block, offset) = if *state.expecting_do.borrow() {
-        try_parse_do_block(state, offset)
+        try_parse_do(state, offset)
             .map(|(block, offset)| (Some(block), offset))
             .unwrap_or((None, offset))
     } else {
@@ -1457,6 +1458,10 @@ fn try_parse_case_arm_guard(
 
 // TODO: make another version of parse_do_block that has the same core logic but work specifically
 // for keyword syntax
+
+fn try_parse_do(state: &PState, offset: u64) -> ParserResult<Expression> {
+    try_parse_do_block(state, offset).or_else(|_| try_parse_do_keyword(state, offset))
+}
 
 /// Parses a sugarized do block and returns a desugarized keyword structure
 fn try_parse_do_block(state: &PState, offset: u64) -> ParserResult<Expression> {
@@ -1962,7 +1967,7 @@ fn try_parse_if_expression(state: &PState, offset: u64) -> ParserResult<Expressi
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(state, offset)?;
 
-    let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
+    let (do_block_kw, offset) = try_parse_do(state, offset)?;
     let list = extract_list(do_block_kw);
     let do_block = keyword_fetch(&list, atom!("do")).unwrap();
     let else_block = keyword_fetch(&list, atom!("else")).map(Box::new);
@@ -1982,7 +1987,7 @@ fn try_parse_unless_expression(state: &PState, offset: u64) -> ParserResult<Expr
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(state, offset)?;
 
-    let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
+    let (do_block_kw, offset) = try_parse_do(state, offset)?;
     let list = extract_list(do_block_kw);
     let do_block = keyword_fetch(&list, atom!("do")).unwrap();
     let else_block = keyword_fetch(&list, atom!("else")).map(Box::new);
