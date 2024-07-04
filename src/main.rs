@@ -322,6 +322,60 @@ struct Sigil {
     modifier: Option<String>,
 }
 
+// TODO: bitstring typespecs
+//      | <<>>                          # empty bitstring
+//      | <<_::size>>                   # size is 0 or a positive integer
+//      | <<_::_*unit>>                 # unit is an integer from 1 to 256
+//      | <<_::size, _::_*unit>>
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum TypespecLambda {
+    // (... -> type)
+    Any(Box<Typespec>),
+    // (-> type)
+    NoParameters(Box<Typespec>),
+    // (a, b -> type)
+    Parameters(Vec<Typespec>, Box<Typespec>),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum TypespecListType {
+    /// []
+    Empty,
+    /// [type]
+    Of(Box<TypespecBody>),
+    /// [...]
+    OfAny,
+    /// [type, ...]
+    NonEmptyOf,
+    // [key: value_type]
+    KeywordList(Vec<(Atom, Typespec)>),
+}
+
+/// https://hexdocs.pm/elixir/typespecs.html
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum TypespecBody {
+    SimpleCall(Identifier),
+    ParameterizedCall(Identifier, Vec<Typespec>),
+    Union(Box<Typespec>, Box<Typespec>),
+    // literals
+    Integer(usize),
+    Atom(Atom),
+    Bool(bool),
+    Lambda(TypespecLambda),
+    List(TypespecListType),
+    Nil,
+    // TODO: range
+    // TODO: tuples
+    // TODO: maps
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct Typespec {
+    name: Option<String>,
+    body: TypespecBody,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum Expression {
     Bool(bool),
@@ -358,8 +412,7 @@ enum Expression {
     Lambda(Lambda),
     Grouping(Box<Expression>),
     Sigil(Sigil),
-    // TODO: try catch
-    // TODO: receive after
+    Typespec(Typespec),
     Quote(Quote),
     MacroDef(Macro),
     Call(Call),
@@ -1554,10 +1607,10 @@ fn try_parse_do_block(state: &PState, offset: usize) -> ParserResult<Expression>
     Ok((Expression::List(base_list), offset))
 }
 
-fn try_parse_atom(state: &PState, offset: usize) -> ParserResult<Expression> {
+fn try_parse_atom(state: &PState, offset: usize) -> ParserResult<Atom> {
     let (atom_node, offset) = try_parse_grammar_name(state, offset, "atom")?;
     let atom_string = extract_node_text(&state.code, &atom_node)[1..].to_string();
-    Ok((Expression::Atom(atom_string), offset))
+    Ok((atom_string, offset))
 }
 
 fn try_parse_quoted_atom(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -1569,7 +1622,7 @@ fn try_parse_quoted_atom(state: &PState, offset: usize) -> ParserResult<Expressi
     Ok((Expression::Atom(atom_content), offset))
 }
 
-fn try_parse_bool(state: &PState, offset: usize) -> ParserResult<Expression> {
+fn try_parse_bool(state: &PState, offset: usize) -> ParserResult<bool> {
     let (_, offset) = try_parse_grammar_name(state, offset, "boolean")?;
 
     let (boolean_result, offset) = match try_parse_grammar_name(state, offset, "true") {
@@ -1584,15 +1637,110 @@ fn try_parse_bool(state: &PState, offset: usize) -> ParserResult<Expression> {
         (boolean_result, offset)
     };
 
-    Ok((Expression::Bool(boolean_result), offset))
+    Ok((boolean_result, offset))
 }
 
 fn try_parse_nil(state: &PState, offset: usize) -> ParserResult<Expression> {
-    // INFO: for some reason treesitter-elixir outputs nil twice with the same span for each nil,
-    // so we consume both
+    // NOTE: nil is duplicated probably because of the flattened tree node
     let (_, offset) = try_parse_grammar_name(state, offset, "nil")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "nil")?;
     Ok((Expression::Nil, offset))
+}
+
+fn try_parse_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
+    try_parse_named_typespec(state, offset).or_else(|_| try_parse_unnamed_typespec(state, offset))
+}
+
+fn try_parse_named_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
+    let (type_name, offset) = try_parse_identifier(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "::")?;
+
+    let (type_body, offset) = try_parse_typespec_body(state, offset)?;
+
+    let spec = Typespec {
+        name: Some(type_name),
+        body: type_body,
+    };
+
+    Ok((spec, offset))
+}
+
+fn try_parse_unnamed_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
+    let (type_body, offset) = try_parse_typespec_body(state, offset)?;
+
+    let spec = Typespec {
+        name: None,
+        body: type_body,
+    };
+
+    Ok((spec, offset))
+}
+
+fn try_parse_typespec_body(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+    let (body, offset) = try_parse_integer(state, offset)
+        .map(|(int, offset)| (TypespecBody::Integer(int), offset))
+        .or_else(|_| {
+            try_parse_atom(state, offset).map(|(atom, offset)| (TypespecBody::Atom(atom), offset))
+        })
+        .or_else(|_| try_parse_typespec_call(state, offset))
+        .or_else(|_| {
+            try_parse_bool(state, offset).map(|(bool, offset)| (TypespecBody::Bool(bool), offset))
+        })
+        .or_else(|_| {
+            try_parse_identifier(state, offset)
+                .map(|(target, offset)| (TypespecBody::SimpleCall(target), offset))
+        })
+        .or_else(|_| try_parse_nil(state, offset).map(|(_, offset)| (TypespecBody::Nil, offset)))?;
+
+    Ok((body, offset))
+}
+
+fn try_parse_typespec_call(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+    let (callee, offset) = try_parse_identifier(state, offset)?;
+    let (arguments, offset) = try_parse_typespec_call_arguments(state, offset)?;
+
+    let (result, offset) = if arguments.is_empty() {
+        (TypespecBody::SimpleCall(callee), offset)
+    } else {
+        (TypespecBody::ParameterizedCall(callee, arguments), offset)
+    };
+
+    Ok((result, offset))
+}
+
+fn try_parse_typespec_call_arguments(state: &PState, offset: usize) -> ParserResult<Vec<Typespec>> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
+
+    let (offset, has_parenthesis) = match try_parse_grammar_name(state, offset, "(") {
+        Ok((_node, new_offset)) => (new_offset, true),
+        Err(_) => (offset, false),
+    };
+
+    // Handle empty parenthesis
+    if let Ok((_, offset)) = try_parse_grammar_name(state, offset, ")") {
+        return Ok((vec![], offset));
+    };
+
+    dbg!(offset);
+
+    // TODO: support many arguments and empty ones as well
+    // TODO: support optional parenthesis
+    // TODO: unify these parameters parsing logic somewhere
+    let (arguments, offset) =
+        try_parse_typespec(state, offset).map(|(arg, offset)| (vec![arg], offset))?;
+
+    dbg!(&arguments, offset);
+
+    let offset = if has_parenthesis {
+        let (_, offset) = try_parse_grammar_name(state, offset, ")")?;
+        offset
+    } else {
+        offset
+    };
+
+    Ok((arguments, offset))
 }
 
 fn try_parse_map(state: &PState, offset: usize) -> ParserResult<Map> {
@@ -1927,8 +2075,16 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
                 .map_err(|_| err)
         })
         .or_else(|err| try_parse_nil(state, offset).map_err(|_| err))
-        .or_else(|err| try_parse_bool(state, offset).map_err(|_| err))
-        .or_else(|err| try_parse_atom(state, offset).map_err(|_| err))
+        .or_else(|err| {
+            try_parse_bool(state, offset)
+                .map(|(bool, offset)| (Expression::Bool(bool), offset))
+                .map_err(|_| err)
+        })
+        .or_else(|err| {
+            try_parse_atom(state, offset)
+                .map(|(atom, offset)| (Expression::Atom(atom), offset))
+                .map_err(|_| err)
+        })
         .or_else(|err| try_parse_quoted_atom(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_list(state, offset).map_err(|_| err))
         .or_else(|err| {
@@ -1967,6 +2123,11 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
         .or_else(|err| {
             try_parse_attribute_definition(state, offset)
                 .map(|(attribute, offset)| (Expression::AttributeDef(attribute), offset))
+                .map_err(|_| err)
+        })
+        .or_else(|err| {
+            try_parse_typespec(state, offset)
+                .map(|(spec, offset)| (Expression::Typespec(spec), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| {
@@ -2370,6 +2531,16 @@ macro_rules! id {
 macro_rules! string {
     ($x:expr) => {
         Expression::String($x.to_string())
+    };
+}
+
+#[macro_export]
+macro_rules! spec {
+    ( $name:expr, $body:expr ) => {
+        Expression::Typespec(Typespec {
+            name: Some($name.to_string()),
+            body: $body,
+        })
     };
 }
 
@@ -4019,10 +4190,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Import(Import {
-            target: vec![
-                "Plug.Conn".to_string(),
-                "Plug.Middleware".to_string(),
-            ],
+            target: vec!["Plug.Conn".to_string(), "Plug.Middleware".to_string()],
             options: None,
         })]);
 
@@ -4887,6 +5055,126 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_integer_literal_typespec() {
+        let code = r#"
+        my_type :: 10
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!("my_type", TypespecBody::Integer(10))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_atom_literal_typespec() {
+        let code = r#"
+        type :: :api_key
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!(
+            "type",
+            TypespecBody::Atom("api_key".to_string())
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_bool_literal_typespec() {
+        let code = r#"
+        truth :: true
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!("truth", TypespecBody::Bool(true))]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        falsy :: false
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!("falsy", TypespecBody::Bool(false))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_nested_binding_typespec() {
+        let code = r#"
+        truth :: (yes :: true)
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!("truth", TypespecBody::Bool(true))]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        truth :: yes :: true
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!("falsy", TypespecBody::Bool(false))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_nil_literal_typespec() {
+        let code = r#"
+        nothing :: nil
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!("nothing", TypespecBody::Nil)]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_simple_call_typespec() {
+        let code = r#"
+        numberino :: integer()
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!(
+            "numberino",
+            TypespecBody::SimpleCall("integer".to_string())
+        )]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        numberino :: integer
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_parameterized_call_typespec() {
+        let code = r#"
+        numbers :: list(integer())
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!(
+            "numbers",
+            TypespecBody::ParameterizedCall(
+                "list".to_string(),
+                vec![Typespec {
+                    name: None,
+                    body: TypespecBody::SimpleCall("integer".to_string())
+                }]
+            )
+        )]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        numbers :: list integer
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
@@ -4901,6 +5189,8 @@ mod tests {
 // TODO: @spec and @type support
 //
 // TODO: separate remote from local calls in the Expression enum?
+//
+// TODO: parse bitstrings
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
