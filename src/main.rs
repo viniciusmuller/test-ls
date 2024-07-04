@@ -6,16 +6,13 @@ use std::{env, ffi::OsStr, fs, path::Path};
 use tree_sitter::{Node, Tree};
 use walkdir::WalkDir;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct Identifier(String);
-
 #[derive(Debug, PartialEq, Clone)]
 struct Float(f64);
 
 impl Eq for Float {}
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct Atom(String);
+type Atom = String;
+type Identifier = String;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Parameter {
@@ -546,7 +543,7 @@ fn try_parse_capture_expression_variable(
     let (_, offset) = try_parse_grammar_name(state, offset, "&")?;
     let (node, offset) = try_parse_grammar_name(state, offset, "integer")?;
     let content = extract_node_text(&state.code, &node);
-    Ok((Identifier(format!("&{}", content)), offset))
+    Ok((format!("&{}", content), offset))
 }
 
 fn try_parse_capture_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -702,7 +699,7 @@ fn try_extract_do_keyword(
 ) -> ParserResult<Expression> {
     match pair {
         Some((Expression::Atom(atom), block)) => {
-            if atom == Atom("do".to_string()) {
+            if atom == "do" {
                 Ok((block, offset))
             } else {
                 Err(build_unexpected_token_error(offset, start_node))
@@ -1015,7 +1012,7 @@ fn try_parse_identifier(state: &PState, offset: usize) -> ParserResult<Identifie
             return Err(build_unexpected_keyword_error(offset, &token));
         }
 
-        Ok((Identifier(identifier_name), offset + 1))
+        Ok((identifier_name, offset + 1))
     } else {
         Err(build_unexpected_token_error(offset, &token))
     }
@@ -1027,7 +1024,7 @@ fn try_parse_keyword(state: &PState, offset: usize, keyword: &str) -> ParserResu
     let grammar_name = token.grammar_name();
 
     if grammar_name == "identifier" && identifier_name == keyword {
-        Ok((Identifier(identifier_name), offset + 1))
+        Ok((identifier_name, offset + 1))
     } else {
         Err(build_unexpected_token_error(offset, &token))
     }
@@ -1204,7 +1201,7 @@ fn try_parse_keyword_pair(state: &PState, offset: usize) -> ParserResult<(Expres
                 .unwrap()
                 .to_string();
 
-            (Atom(clean_atom), offset)
+            (clean_atom, offset)
         }
         Err(_) => try_parse_quoted_keyword(state, offset)?,
     };
@@ -1219,7 +1216,7 @@ fn try_parse_quoted_keyword(state: &PState, offset: usize) -> ParserResult<Atom>
     let (_, offset) = try_parse_grammar_name(state, offset, "\"")?;
     let (quoted_content, offset) = try_parse_quoted_content(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "\"")?;
-    Ok((Atom(quoted_content), offset))
+    Ok((quoted_content, offset))
 }
 
 fn try_parse_cond_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -1560,7 +1557,7 @@ fn try_parse_do_block(state: &PState, offset: usize) -> ParserResult<Expression>
 fn try_parse_atom(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (atom_node, offset) = try_parse_grammar_name(state, offset, "atom")?;
     let atom_string = extract_node_text(&state.code, &atom_node)[1..].to_string();
-    Ok((Expression::Atom(Atom(atom_string)), offset))
+    Ok((Expression::Atom(atom_string), offset))
 }
 
 fn try_parse_quoted_atom(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -1569,7 +1566,7 @@ fn try_parse_quoted_atom(state: &PState, offset: usize) -> ParserResult<Expressi
     let (_, offset) = try_parse_grammar_name(state, offset, "\"")?;
     let (atom_content, offset) = try_parse_quoted_content(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "\"")?;
-    Ok((Expression::Atom(Atom(atom_content)), offset))
+    Ok((Expression::Atom(atom_content), offset))
 }
 
 fn try_parse_bool(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -1861,7 +1858,7 @@ fn try_parse_interpolation<'a>(state: &'a PState, offset: usize) -> ParserResult
 fn try_parse_module_name(state: &PState, offset: usize) -> ParserResult<Atom> {
     let (atom_node, offset) = try_parse_grammar_name(state, offset, "alias")?;
     let atom_string = extract_node_text(&state.code, &atom_node);
-    Ok((Atom(atom_string), offset))
+    Ok((atom_string, offset))
 }
 
 fn try_parse_module_operator_name(state: &PState, offset: usize) -> ParserResult<Vec<Atom>> {
@@ -1875,7 +1872,7 @@ fn try_parse_module_name_qualified_tuples(
     offset: usize,
 ) -> ParserResult<Vec<Atom>> {
     let (_, offset) = try_parse_grammar_name(state, offset, "dot")?;
-    let (Atom(base_name), offset) = try_parse_module_name(state, offset)?;
+    let (base_name, offset) = try_parse_module_name(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, ".")?;
     let (tuple, offset) = try_parse_tuple(state, offset)?;
 
@@ -1883,7 +1880,7 @@ fn try_parse_module_name_qualified_tuples(
         .items
         .into_iter()
         .map(|item| match item {
-            Expression::Atom(Atom(name)) => Atom(format!("{}.{}", base_name, name)),
+            Expression::Atom(name) => format!("{}.{}", base_name, name),
             _else => panic!("TODO: return proper error"),
         })
         .collect();
@@ -2330,7 +2327,7 @@ fn extract_node_text(code: &str, node: &Node) -> String {
 #[macro_export]
 macro_rules! atom {
     ($x:expr) => {
-        Expression::Atom(Atom($x.to_string()))
+        Expression::Atom($x.to_string())
     };
 }
 
@@ -2365,7 +2362,7 @@ macro_rules! bool {
 #[macro_export]
 macro_rules! id {
     ($x:expr) => {
-        Expression::Identifier(Identifier($x.to_string()))
+        Expression::Identifier($x.to_string())
     };
 }
 
@@ -2499,9 +2496,9 @@ mod tests {
         let code = "@my_module_attribute";
         let result = parse(&code).unwrap();
 
-        let target = Block(vec![Expression::AttributeRef(Identifier(
+        let target = Block(vec![Expression::AttributeRef(
             "my_module_attribute".to_string(),
-        ))]);
+        )]);
 
         assert_eq!(result, target);
     }
@@ -2780,7 +2777,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Module(Module {
-            name: Atom("Test.CustomModule".to_string()),
+            name: "Test.CustomModule".to_string(),
             body: Box::new(Expression::Block(vec![])),
         })]);
 
@@ -2796,7 +2793,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
-            name: Identifier("do_on_ce".to_string()),
+            name: "do_on_ce".to_string(),
             is_private: true,
             body: Box::new(call!(
                 id!("do_on_ee"),
@@ -2829,11 +2826,11 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![
             Expression::Module(Module {
-                name: Atom("Test.CustomModule".to_string()),
+                name: "Test.CustomModule".to_string(),
                 body: Box::new(Expression::Block(vec![])),
             }),
             Expression::Module(Module {
-                name: Atom("Test.SecondModule".to_string()),
+                name: "Test.SecondModule".to_string(),
                 body: Box::new(Expression::Block(vec![])),
             }),
         ]);
@@ -2857,10 +2854,10 @@ mod tests {
         let result = parse(&code).unwrap();
 
         let target = Block(vec![Expression::Module(Module {
-            name: Atom("Test.CustomModule".to_string()),
+            name: "Test.CustomModule".to_string(),
             body: Box::new(Block(vec![
                 Expression::FunctionDef(Function {
-                    name: Identifier("func".to_string()),
+                    name: "func".to_string(),
                     is_private: false,
                     parameters: vec![],
                     body: Box::new(Expression::Call(Call {
@@ -2871,7 +2868,7 @@ mod tests {
                     guard_expression: None,
                 }),
                 Expression::FunctionDef(Function {
-                    name: Identifier("priv_func".to_string()),
+                    name: "priv_func".to_string(),
                     is_private: true,
                     parameters: vec![],
                     body: Box::new(int!(10)),
@@ -2892,7 +2889,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
-            name: Identifier("func".to_string()),
+            name: "func".to_string(),
             is_private: false,
             parameters: vec![Parameter {
                 expression: Box::new(id!("a")),
@@ -2914,7 +2911,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
-            name: Identifier("func".to_string()),
+            name: "func".to_string(),
             is_private: false,
             parameters: vec![],
             body: Box::new(Expression::Call(Call {
@@ -2935,7 +2932,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
-            name: Identifier("func".to_string()),
+            name: "func".to_string(),
             is_private: false,
             parameters: vec![Parameter {
                 expression: Box::new(Expression::Map(Map {
@@ -2960,7 +2957,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
-            name: Identifier("guarded".to_string()),
+            name: "guarded".to_string(),
             is_private: false,
             parameters: vec![Parameter {
                 expression: Box::new(id!("a")),
@@ -2988,7 +2985,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
-            name: Identifier("func".to_string()),
+            name: "func".to_string(),
             is_private: false,
             body: Box::new(Block(vec![])),
             parameters: vec![],
@@ -3006,7 +3003,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
-            name: Identifier("func".to_string()),
+            name: "func".to_string(),
             is_private: false,
             body: Box::new(Block(vec![])),
             parameters: vec![
@@ -3043,7 +3040,7 @@ mod tests {
         ";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionDef(Function {
-            name: Identifier("func".to_string()),
+            name: "func".to_string(),
             is_private: false,
             body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
             parameters: vec![
@@ -3316,7 +3313,7 @@ mod tests {
         let code = "@timeout 5_000";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::AttributeDef(Attribute {
-            name: Identifier("timeout".to_string()),
+            name: "timeout".to_string(),
             value: Box::new(int!(5000)),
         })]);
 
@@ -3341,22 +3338,22 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Module(Module {
-            name: Atom("MyModule".to_string()),
+            name: "MyModule".to_string(),
             body: Box::new(Expression::Block(vec![
                 Expression::AttributeDef(Attribute {
-                    name: Identifier("moduledoc".to_string()),
+                    name: "moduledoc".to_string(),
                     value: Box::new(Expression::String(
                         "\n            This is a nice module!\n            ".to_string(),
                     )),
                 }),
                 Expression::AttributeDef(Attribute {
-                    name: Identifier("doc".to_string()),
+                    name: "doc".to_string(),
                     value: Box::new(Expression::String(
                         "\n            This is a nice function!\n            ".to_string(),
                     )),
                 }),
                 Expression::FunctionDef(Function {
-                    name: Identifier("func".to_string()),
+                    name: "func".to_string(),
                     is_private: false,
                     body: Box::new(int!(10)),
                     parameters: vec![],
@@ -3383,7 +3380,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Struct(Struct {
-            name: Atom("MyApp.User".to_string()),
+            name: "MyApp.User".to_string(),
             entries: vec![
                 (atom!("name"), Expression::String("john".to_string())),
                 (atom!("age"), int!(25)),
@@ -3865,7 +3862,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Require(Require {
-            target: vec![Atom("Logger".to_string())],
+            target: vec!["Logger".to_string()],
             options: None,
         })]);
 
@@ -3880,9 +3877,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Require(Require {
             target: vec![
-                Atom("MyModule.A".to_string()),
-                Atom("MyModule.B".to_string()),
-                Atom("MyModule.C".to_string()),
+                "MyModule.A".to_string(),
+                "MyModule.B".to_string(),
+                "MyModule.C".to_string(),
             ],
             options: None,
         })]);
@@ -3897,7 +3894,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Require(Require {
-            target: vec![Atom("Logger".to_string())],
+            target: vec!["Logger".to_string()],
             options: Some(List {
                 items: vec![tuple!(atom!("level"), atom!("info"))],
                 cons: None,
@@ -3914,7 +3911,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Alias(Alias {
-            target: vec![Atom("MyModule".to_string())],
+            target: vec!["MyModule".to_string()],
             options: None,
         })]);
 
@@ -3929,9 +3926,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Alias(Alias {
             target: vec![
-                Atom("MyModule.A".to_string()),
-                Atom("MyModule.B".to_string()),
-                Atom("MyModule.C".to_string()),
+                "MyModule.A".to_string(),
+                "MyModule.B".to_string(),
+                "MyModule.C".to_string(),
             ],
             options: None,
         })]);
@@ -3946,7 +3943,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Alias(Alias {
-            target: vec![Atom("MyKeyword".to_string())],
+            target: vec!["MyKeyword".to_string()],
             options: Some(List {
                 items: vec![tuple!(atom!("as"), atom!("Keyword"))],
                 cons: None,
@@ -3963,7 +3960,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Use(Use {
-            target: vec![Atom("MyModule".to_string())],
+            target: vec!["MyModule".to_string()],
             options: None,
         })]);
 
@@ -3977,10 +3974,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Use(Use {
-            target: vec![
-                Atom("Ecto.Query".to_string()),
-                Atom("Ecto.Repo".to_string()),
-            ],
+            target: vec!["Ecto.Query".to_string(), "Ecto.Repo".to_string()],
             options: None,
         })]);
 
@@ -3994,7 +3988,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Use(Use {
-            target: vec![Atom("MyModule".to_string())],
+            target: vec!["MyModule".to_string()],
             options: Some(List {
                 items: vec![tuple!(atom!("some"), atom!("options"))],
                 cons: None,
@@ -4011,7 +4005,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Import(Import {
-            target: vec![Atom("String".to_string())],
+            target: vec!["String".to_string()],
             options: None,
         })]);
 
@@ -4026,8 +4020,8 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Import(Import {
             target: vec![
-                Atom("Plug.Conn".to_string()),
-                Atom("Plug.Middleware".to_string()),
+                "Plug.Conn".to_string(),
+                "Plug.Middleware".to_string(),
             ],
             options: None,
         })]);
@@ -4042,7 +4036,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Import(Import {
-            target: vec![Atom("String".to_string())],
+            target: vec!["String".to_string()],
             options: Some(List {
                 items: vec![tuple!(atom!("only"), list!(atom!("split")))],
                 cons: None,
@@ -4321,10 +4315,8 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionCapture(FunctionCapture {
             arity: 1,
-            callee: Identifier("map".to_string()),
-            remote_callee: Some(FunctionCaptureRemoteCallee::Module(Atom(
-                "Enum".to_string(),
-            ))),
+            callee: "map".to_string(),
+            remote_callee: Some(FunctionCaptureRemoteCallee::Module("Enum".to_string())),
         })]);
 
         assert_eq!(result, target);
@@ -4336,10 +4328,8 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionCapture(FunctionCapture {
             arity: 1,
-            callee: Identifier("map".to_string()),
-            remote_callee: Some(FunctionCaptureRemoteCallee::Variable(Identifier(
-                "enum".to_string(),
-            ))),
+            callee: "map".to_string(),
+            remote_callee: Some(FunctionCaptureRemoteCallee::Variable("enum".to_string())),
         })]);
 
         assert_eq!(result, target);
@@ -4351,7 +4341,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::FunctionCapture(FunctionCapture {
             arity: 1,
-            callee: Identifier("enum".to_string()),
+            callee: "enum".to_string(),
             remote_callee: None,
         })]);
 
@@ -4364,7 +4354,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::DotAccess(DotAccess {
             body: Box::new(id!("my_map")),
-            key: Identifier("my_key".to_string()),
+            key: "my_key".to_string(),
         })]);
 
         assert_eq!(result, target);
@@ -4379,7 +4369,7 @@ mod tests {
                 entries: vec![(atom!("a"), int!(10))],
                 updated: None,
             })),
-            key: Identifier("a".to_string()),
+            key: "a".to_string(),
         })]);
 
         assert_eq!(result, target);
@@ -4621,7 +4611,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::MacroDef(Macro {
-            name: Identifier("my_macro".to_string()),
+            name: "my_macro".to_string(),
             is_private: false,
             body: Box::new(Expression::Block(vec![])),
             guard_expression: None,
@@ -4648,7 +4638,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::MacroDef(Macro {
-            name: Identifier("my_macro".to_string()),
+            name: "my_macro".to_string(),
             is_private: false,
             body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
             guard_expression: None,
@@ -4686,7 +4676,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::MacroDef(Macro {
-            name: Identifier("my_macro".to_string()),
+            name: "my_macro".to_string(),
             is_private: false,
             body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
             guard_expression: None,
@@ -4712,7 +4702,7 @@ mod tests {
     #[test]
     fn parse_macro_guard() {
         let target = Block(vec![Expression::MacroDef(Macro {
-            name: Identifier("my_macro".to_string()),
+            name: "my_macro".to_string(),
             is_private: false,
             body: Box::new(bool!(true)),
             guard_expression: Some(Box::new(call!(id!("is_integer"), id!("x")))),
@@ -4749,7 +4739,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::MacroDef(Macro {
-            name: Identifier("macro".to_string()),
+            name: "macro".to_string(),
             is_private: true,
             parameters: vec![Parameter {
                 expression: Box::new(id!("a")),
@@ -4909,8 +4899,6 @@ mod tests {
 //
 // TODO: map/struct update syntax
 // TODO: @spec and @type support
-//
-// TODO: refactor parser to remove Identifier() and Atom() wrapper types, treat them as strings
 //
 // TODO: separate remote from local calls in the Expression enum?
 
