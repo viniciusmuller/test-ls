@@ -1,4 +1,5 @@
 use core::fmt;
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::{env, ffi::OsStr, fs, path::Path};
 
@@ -90,7 +91,7 @@ struct Quote {
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct PState<'a> {
     code: String,
-    expecting_do: bool,
+    expecting_do: RefCell<bool>,
     tokens: Vec<Node<'a>>,
 }
 
@@ -99,7 +100,7 @@ impl<'a> PState<'a> {
         PState {
             tokens,
             code: code.to_owned(),
-            expecting_do: false,
+            expecting_do: RefCell::new(false),
         }
     }
 
@@ -740,7 +741,6 @@ fn try_parse_function_definition(state: &PState, offset: u64) -> ParserResult<Ex
     if let Ok(((guard_expr, parameters, function_name), offset)) =
         try_parse_function_guard(state, offset)
     {
-        dbg!(&guard_expr, offset);
         let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
         let list = extract_list(do_block_kw);
         let do_block = keyword_fetch(&list, atom!("do")).unwrap();
@@ -797,8 +797,9 @@ fn try_parse_do_keyword(state: &PState, offset: u64) -> ParserResult<Expression>
     match list.items.pop().unwrap() {
         Expression::Tuple(tuple) => {
             if tuple.items[0] == do_atom && tuple.items.len() == 2 {
-                Ok((Expression::List(list), offset))
+                Ok((list!(Expression::Tuple(tuple)), offset))
             } else {
+                // TODO: return normal error here and dont panic
                 panic!("invalid tuple keyword was parsed")
             }
         }
@@ -833,7 +834,15 @@ fn try_parse_macro_definition(state: &PState, offset: u64) -> ParserResult<Expre
     if let Ok(((guard_expr, parameters, macro_name), offset)) =
         try_parse_function_guard(state, offset)
     {
-        let (do_block_kw, offset) = try_parse_do_block(state, offset)?;
+        let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
+        let offset = try_consume(state, offset, comma_parser);
+        dbg!(state.tokens[offset as usize]);
+
+        let (do_block_kw, offset) = try_parse_do_block(state, offset)
+            .or_else(|_| dbg!(try_parse_do_keyword(state, offset)))?;
+
+        dbg!(&do_block_kw);
+
         let list = extract_list(do_block_kw);
         let do_block = keyword_fetch(&list, atom!("do")).unwrap();
 
@@ -893,12 +902,9 @@ fn try_parse_function_guard(
     };
 
     let (_, offset) = try_parse_grammar_name(state, offset, "when")?;
+    *state.expecting_do.borrow_mut() = false;
     let (guard_expression, offset) = try_parse_expression(state, offset)?;
-
-    dbg!(&guard_expression);
-
-    let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
-    let offset = try_consume(state, offset, comma_parser);
+    *state.expecting_do.borrow_mut() = true;
 
     Ok(((guard_expression, parameters, function_name), offset))
 }
@@ -1028,9 +1034,13 @@ fn try_parse_remote_call(state: &PState, offset: u64) -> ParserResult<Expression
     let (local_callee, offset) = try_parse_identifier(state, offset)?;
     let (mut arguments, offset) = try_parse_call_arguments(state, offset)?;
 
-    let (do_block, offset) = try_parse_do_block(state, offset)
-        .map(|(block, offset)| (Some(block), offset))
-        .unwrap_or((None, offset));
+    let (do_block, offset) = if *state.expecting_do.borrow() {
+        try_parse_do_block(state, offset)
+            .map(|(block, offset)| (Some(block), offset))
+            .unwrap_or((None, offset))
+    } else {
+        (None, offset)
+    };
 
     arguments.extend(do_block);
 
@@ -1053,9 +1063,13 @@ fn try_parse_local_call(state: &PState, offset: u64) -> ParserResult<Expression>
     let (mut arguments, offset) =
         try_parse_call_arguments(state, offset).unwrap_or((vec![], offset));
 
-    let (do_block, offset) = try_parse_do_block(state, offset)
-        .map(|(block, offset)| (Some(block), offset))
-        .unwrap_or((None, offset));
+    let (do_block, offset) = if *state.expecting_do.borrow() {
+        try_parse_do_block(state, offset)
+            .map(|(block, offset)| (Some(block), offset))
+            .unwrap_or((None, offset))
+    } else {
+        (None, offset)
+    };
 
     arguments.extend(do_block);
 
