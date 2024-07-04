@@ -331,11 +331,11 @@ struct Sigil {
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum TypespecLambda {
     // (... -> type)
-    Any(Box<TypespecBody>),
+    Any(Box<Expression>),
     // (-> type)
-    NoParameters(Box<TypespecBody>),
+    NoParameters(Box<Expression>),
     // (a, b -> type)
-    Parameters(Vec<TypespecBody>, Box<TypespecBody>),
+    Parameters(Vec<Expression>, Box<Expression>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -343,25 +343,25 @@ enum TypespecListType {
     /// []
     Empty,
     /// [type]
-    Of(Box<TypespecBody>),
+    Of(Box<Expression>),
     /// [...]
     OfAny,
     /// [type, ...]
     NonEmptyOf,
     // [key: value_type]
-    KeywordList(Vec<(Atom, Typespec)>),
+    KeywordList(Vec<(Atom, Expression)>),
 }
+
+type Typespec = (Option<String>, TypespecBody);
 
 /// https://hexdocs.pm/elixir/typespecs.html
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum TypespecBody {
-    /// my_spec :: second_type :: integer()
-    Spec(Box<Typespec>),
     /// my_spec :: (second_type :: :atom)
-    Grouping(Box<Typespec>),
+    Grouping(Box<Expression>),
     SimpleCall(Identifier),
-    ParameterizedCall(Identifier, Vec<Typespec>),
-    Union(Box<Typespec>, Box<Typespec>),
+    ParameterizedCall(Identifier, Vec<Expression>),
+    Union(Box<Expression>, Box<Expression>),
     // literals
     Integer(usize),
     Atom(Atom),
@@ -370,14 +370,8 @@ enum TypespecBody {
     List(TypespecListType),
     Nil,
     // TODO: range
-    // TODO: tuples
-    // TODO: maps
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct Typespec {
-    name: Option<String>,
-    body: TypespecBody,
+    Tuple(Vec<Expression>), // TODO: tuples
+                            // TODO: maps
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -416,7 +410,7 @@ enum Expression {
     Lambda(Lambda),
     Grouping(Box<Expression>),
     Sigil(Sigil),
-    Typespec(Typespec),
+    Typespec(Option<String>, TypespecBody),
     Quote(Quote),
     MacroDef(Macro),
     Call(Call),
@@ -1176,10 +1170,17 @@ fn try_parse_call_arguments(state: &PState, offset: usize) -> ParserResult<Vec<E
     Ok((base_arguments, offset))
 }
 
+fn comma_parser<'a>(state: &'a PState, offset: usize) -> ParserResult<Node<'a>> {
+    try_parse_grammar_name(state, offset, ",")
+}
+
 // TODO: use this to parse expressions sep by comma in the function body
 fn parse_expressions_sep_by_comma(state: &PState, offset: usize) -> ParserResult<Vec<Expression>> {
-    let sep_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
-    try_parse_sep_by(state, offset, try_parse_expression, sep_parser)
+    try_parse_sep_by(state, offset, try_parse_expression, comma_parser)
+}
+
+fn parse_typespecs_sep_by_comma(state: &PState, offset: usize) -> ParserResult<Vec<Typespec>> {
+    try_parse_sep_by(state, offset, try_parse_typespec, comma_parser)
 }
 
 fn try_parse_keyword_expressions(state: &PState, offset: usize) -> ParserResult<List> {
@@ -1660,25 +1661,14 @@ fn try_parse_named_typespec(state: &PState, offset: usize) -> ParserResult<Types
     let (type_name, offset) = try_parse_identifier(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "::")?;
 
-    let (type_body, offset) = try_parse_typespec_body(state, offset)?;
+    let (body, offset) = try_parse_typespec_body(state, offset)?;
 
-    let spec = Typespec {
-        name: Some(type_name),
-        body: type_body,
-    };
-
-    Ok((spec, offset))
+    Ok(((Some(type_name), body), offset))
 }
 
 fn try_parse_unnamed_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
-    let (type_body, offset) = try_parse_typespec_body(state, offset)?;
-
-    let spec = Typespec {
-        name: None,
-        body: type_body,
-    };
-
-    Ok((spec, offset))
+    let (body, offset) = try_parse_typespec_body(state, offset)?;
+    Ok(((None, body), offset))
 }
 
 fn try_parse_typespec_body(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
@@ -1689,12 +1679,19 @@ fn try_parse_typespec_body(state: &PState, offset: usize) -> ParserResult<Typesp
         })
         .or_else(|_| try_parse_typespec_call(state, offset))
         .or_else(|_| try_parse_typespec_grouping(state, offset))
+        .or_else(|_| try_parse_typespec_tuple(state, offset))
         .or_else(|_| {
             try_parse_bool(state, offset).map(|(bool, offset)| (TypespecBody::Bool(bool), offset))
         })
         .or_else(|_| {
             try_parse_identifier(state, offset)
                 .map(|(target, offset)| (TypespecBody::SimpleCall(target), offset))
+        })
+        .or_else(|_| {
+            try_parse_named_typespec(state, offset).map(|((name, spec), offset)| {
+                let spec = Box::new(Expression::Typespec(name, spec));
+                (TypespecBody::Grouping(spec), offset)
+            })
         })
         .or_else(|_| try_parse_nil(state, offset).map(|(_, offset)| (TypespecBody::Nil, offset)))?;
 
@@ -1705,6 +1702,10 @@ fn try_parse_typespec_call(state: &PState, offset: usize) -> ParserResult<Typesp
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (callee, offset) = try_parse_identifier(state, offset)?;
     let (arguments, offset) = try_parse_typespec_call_arguments(state, offset)?;
+    let arguments = arguments
+        .into_iter()
+        .map(|(name, spec)| Expression::Typespec(name, spec))
+        .collect::<Vec<_>>();
 
     let (result, offset) = if arguments.is_empty() {
         (TypespecBody::SimpleCall(callee), offset)
@@ -1718,10 +1719,26 @@ fn try_parse_typespec_call(state: &PState, offset: usize) -> ParserResult<Typesp
 fn try_parse_typespec_grouping(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
     let (_, offset) = try_parse_grammar_name(state, offset, "block")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "(")?;
-    let (body, offset) = try_parse_typespec(state, offset)?;
+    let ((name, spec), offset) = try_parse_typespec(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, ")")?;
-    let grouping = TypespecBody::Grouping(Box::new(body));
+    let grouping = TypespecBody::Grouping(Box::new(Expression::Typespec(name, spec)));
     Ok((grouping, offset))
+}
+
+fn try_parse_typespec_tuple(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "tuple")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
+
+    let (specs, offset) = parse_typespecs_sep_by_comma(state, offset).unwrap_or((vec![], offset));
+
+    let specs = specs
+        .into_iter()
+        .map(|(name, spec)| Expression::Typespec(name, spec))
+        .collect();
+
+    let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
+
+    Ok((TypespecBody::Tuple(specs), offset))
 }
 
 fn try_parse_typespec_call_arguments(state: &PState, offset: usize) -> ParserResult<Vec<Typespec>> {
@@ -1743,7 +1760,7 @@ fn try_parse_typespec_call_arguments(state: &PState, offset: usize) -> ParserRes
     // TODO: support optional parenthesis
     // TODO: unify these parameters parsing logic somewhere
     let (arguments, offset) =
-        try_parse_typespec(state, offset).map(|(arg, offset)| (vec![arg], offset))?;
+        try_parse_typespec(state, offset).map(|(spec, offset)| (vec![spec], offset))?;
 
     dbg!(&arguments, offset);
 
@@ -2141,7 +2158,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
         })
         .or_else(|err| {
             try_parse_typespec(state, offset)
-                .map(|(spec, offset)| (Expression::Typespec(spec), offset))
+                .map(|((name, spec), offset)| (Expression::Typespec(name, spec), offset))
                 .map_err(|_| err)
         })
         .or_else(|err| {
@@ -2149,6 +2166,8 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
             // if you want to see the specific token that caused the error, uncomment the dbg below
             // and look at the logs
             // dbg!(&err);
+            // // TODO: probably need to a dd this map_err retaining the old err to all or_else
+            // calls or things of this kind
             try_parse_float(state, offset)
                 .map(|(float, offset)| (Expression::Float(float), offset))
                 .map_err(|_| err)
@@ -2549,16 +2568,6 @@ macro_rules! string {
 }
 
 #[macro_export]
-macro_rules! spec {
-    ( $name:expr, $body:expr ) => {
-        Expression::Typespec(Typespec {
-            name: Some($name.to_string()),
-            body: $body,
-        })
-    };
-}
-
-#[macro_export]
 macro_rules! binary_operation {
     ($left:expr, $operator:expr, $right:expr) => {
         Expression::BinaryOperation(BinaryOperation {
@@ -2606,6 +2615,20 @@ macro_rules! call {
             remote_callee: None,
             arguments: vec![$($arg,)*]
         })
+    };
+}
+
+// #[macro_export]
+macro_rules! spec {
+    ( $body:expr ) => {
+        Expression::Typespec(None, $body)
+    };
+}
+
+#[macro_export]
+macro_rules! named_spec {
+    ( $name:expr, $body:expr ) => {
+        Expression::Typespec(Some($name.to_string()), $body)
     };
 }
 
@@ -5103,7 +5126,7 @@ mod tests {
         my_type :: 10
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!("my_type", TypespecBody::Integer(10))]);
+        let target = Block(vec![named_spec!("my_type", TypespecBody::Integer(10))]);
 
         assert_eq!(result, target);
     }
@@ -5114,7 +5137,7 @@ mod tests {
         type :: :api_key
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!(
+        let target = Block(vec![named_spec!(
             "type",
             TypespecBody::Atom("api_key".to_string())
         )]);
@@ -5128,7 +5151,7 @@ mod tests {
         truth :: true
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!("truth", TypespecBody::Bool(true))]);
+        let target = Block(vec![named_spec!("truth", TypespecBody::Bool(true))]);
 
         assert_eq!(result, target);
 
@@ -5136,7 +5159,7 @@ mod tests {
         falsy :: false
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!("falsy", TypespecBody::Bool(false))]);
+        let target = Block(vec![named_spec!("falsy", TypespecBody::Bool(false))]);
 
         assert_eq!(result, target);
     }
@@ -5147,12 +5170,9 @@ mod tests {
         truth :: (yes :: true)
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!(
+        let target = Block(vec![named_spec!(
             "truth",
-            TypespecBody::Grouping(Box::new(Typespec {
-                name: Some("yes".to_string()),
-                body: TypespecBody::Bool(true)
-            }))
+            TypespecBody::Grouping(Box::new(named_spec!("yes", TypespecBody::Bool(true))))
         )]);
 
         assert_eq!(result, target);
@@ -5164,12 +5184,9 @@ mod tests {
         truth :: yes :: true
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!(
+        let target = Block(vec![named_spec!(
             "truth",
-            TypespecBody::Spec(Box::new(Typespec {
-                name: Some("yes".to_string()),
-                body: TypespecBody::Bool(true)
-            }))
+            TypespecBody::Grouping(Box::new(named_spec!("yes", TypespecBody::Bool(true))))
         )]);
 
         assert_eq!(result, target);
@@ -5181,7 +5198,7 @@ mod tests {
         nothing :: nil
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!("nothing", TypespecBody::Nil)]);
+        let target = Block(vec![named_spec!("nothing", TypespecBody::Nil)]);
 
         assert_eq!(result, target);
     }
@@ -5192,7 +5209,7 @@ mod tests {
         numberino :: integer()
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!(
+        let target = Block(vec![named_spec!(
             "numberino",
             TypespecBody::SimpleCall("integer".to_string())
         )]);
@@ -5212,14 +5229,11 @@ mod tests {
         numbers :: list(integer())
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!(
+        let target = Block(vec![named_spec!(
             "numbers",
             TypespecBody::ParameterizedCall(
                 "list".to_string(),
-                vec![Typespec {
-                    name: None,
-                    body: TypespecBody::SimpleCall("integer".to_string())
-                }]
+                vec![spec!(TypespecBody::SimpleCall("integer".to_string()))]
             )
         )]);
 
@@ -5229,6 +5243,34 @@ mod tests {
         numbers :: list integer
         "#;
         let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_tuple_typespec() {
+        let code = r#"
+        elems :: {integer(), string()}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![named_spec!(
+            "elems",
+            TypespecBody::Tuple(vec![
+                spec!(TypespecBody::SimpleCall("integer".to_string())),
+                spec!(TypespecBody::SimpleCall("string".to_string())),
+            ])
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_tuple_empty_typespec() {
+        let code = r#"
+        elems :: {}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![named_spec!("elems", TypespecBody::Tuple(vec![]))]);
+
         assert_eq!(result, target);
     }
 }
