@@ -331,11 +331,11 @@ struct Sigil {
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum TypespecLambda {
     // (... -> type)
-    Any(Box<Typespec>),
+    Any(Box<TypespecBody>),
     // (-> type)
-    NoParameters(Box<Typespec>),
+    NoParameters(Box<TypespecBody>),
     // (a, b -> type)
-    Parameters(Vec<Typespec>, Box<Typespec>),
+    Parameters(Vec<TypespecBody>, Box<TypespecBody>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -355,6 +355,10 @@ enum TypespecListType {
 /// https://hexdocs.pm/elixir/typespecs.html
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum TypespecBody {
+    /// my_spec :: second_type :: integer()
+    Spec(Box<Typespec>),
+    /// my_spec :: (second_type :: :atom)
+    Grouping(Box<Typespec>),
     SimpleCall(Identifier),
     ParameterizedCall(Identifier, Vec<Typespec>),
     Union(Box<Typespec>, Box<Typespec>),
@@ -1684,6 +1688,7 @@ fn try_parse_typespec_body(state: &PState, offset: usize) -> ParserResult<Typesp
             try_parse_atom(state, offset).map(|(atom, offset)| (TypespecBody::Atom(atom), offset))
         })
         .or_else(|_| try_parse_typespec_call(state, offset))
+        .or_else(|_| try_parse_typespec_grouping(state, offset))
         .or_else(|_| {
             try_parse_bool(state, offset).map(|(bool, offset)| (TypespecBody::Bool(bool), offset))
         })
@@ -1708,6 +1713,15 @@ fn try_parse_typespec_call(state: &PState, offset: usize) -> ParserResult<Typesp
     };
 
     Ok((result, offset))
+}
+
+fn try_parse_typespec_grouping(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "block")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "(")?;
+    let (body, offset) = try_parse_typespec(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, ")")?;
+    let grouping = TypespecBody::Grouping(Box::new(body));
+    Ok((grouping, offset))
 }
 
 fn try_parse_typespec_call_arguments(state: &PState, offset: usize) -> ParserResult<Vec<Typespec>> {
@@ -3650,6 +3664,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_binary_associativity_plus() {
+        let code = "20 + 40 + 60";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![binary_operation!(
+            binary_operation!(int!(20), BinaryOperator::Plus, int!(40)),
+            BinaryOperator::Plus,
+            int!(60)
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    // TODO: handle left and right associative operators correctly
+    // #[test]
+    // fn parse_binary_associativity_mult() {
+    //     let code = "20 + 40 * 60";
+    //     let result = parse(&code).unwrap();
+    //     let target = Block(vec![binary_operation!(
+    //         int!(20),
+    //         BinaryOperator::Mult,
+    //         binary_operation!(int!(40), BinaryOperator::Plus, int!(60))
+    //     )]);
+
+    //     assert_eq!(result, target);
+    // }
+
+    #[test]
     fn parse_binary_minus() {
         let code = "100 - 50";
         let result = parse(&code).unwrap();
@@ -5101,20 +5142,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_nested_binding_typespec() {
+    fn parse_grouping_typespec() {
         let code = r#"
         truth :: (yes :: true)
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!("truth", TypespecBody::Bool(true))]);
+        let target = Block(vec![spec!(
+            "truth",
+            TypespecBody::Grouping(Box::new(Typespec {
+                name: Some("yes".to_string()),
+                body: TypespecBody::Bool(true)
+            }))
+        )]);
 
         assert_eq!(result, target);
+    }
 
+    #[test]
+    fn parse_associativity_typespec() {
         let code = r#"
         truth :: yes :: true
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![spec!("falsy", TypespecBody::Bool(false))]);
+        let target = Block(vec![spec!(
+            "truth",
+            TypespecBody::Spec(Box::new(Typespec {
+                name: Some("yes".to_string()),
+                body: TypespecBody::Bool(true)
+            }))
+        )]);
 
         assert_eq!(result, target);
     }
@@ -5176,6 +5232,8 @@ mod tests {
         assert_eq!(result, target);
     }
 }
+
+// TODO: along with typespecs, also parse @spec attributes
 
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
 // TODO: support `for` (tricky one)
