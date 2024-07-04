@@ -90,6 +90,7 @@ struct Quote {
 struct PState<'a> {
     code: String,
     expecting_do: RefCell<bool>,
+    expecting_typespec: RefCell<bool>,
     tokens: Vec<Node<'a>>,
 }
 
@@ -99,6 +100,7 @@ impl<'a> PState<'a> {
             tokens,
             code: code.to_owned(),
             expecting_do: RefCell::new(true),
+            expecting_typespec: RefCell::new(true),
         }
     }
 
@@ -550,7 +552,7 @@ fn parse(code: &str) -> Result<Expression, ParseError> {
     let tokens = nodes.clone();
 
     let mut parser = PState::init(code, tokens);
-    let (result, offset) = parser.parse()?;
+    let (result, _offset) = parser.parse()?;
 
     Ok(result)
 }
@@ -1653,7 +1655,13 @@ fn try_parse_nil(state: &PState, offset: usize) -> ParserResult<Expression> {
 }
 
 fn try_parse_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
-    try_parse_named_typespec(state, offset).or_else(|_| try_parse_unnamed_typespec(state, offset))
+    if *state.expecting_typespec.borrow() {
+        try_parse_named_typespec(state, offset)
+            .or_else(|_| try_parse_unnamed_typespec(state, offset))
+    } else {
+        let token = state.tokens[offset];
+        Err(build_unexpected_token_error(offset, &token))
+    }
 }
 
 fn try_parse_named_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
@@ -1680,6 +1688,7 @@ fn try_parse_typespec_body(state: &PState, offset: usize) -> ParserResult<Typesp
         .or_else(|_| try_parse_typespec_call(state, offset))
         .or_else(|_| try_parse_typespec_grouping(state, offset))
         .or_else(|_| try_parse_typespec_tuple(state, offset))
+        .or_else(|_| try_parse_typespec_union(state, offset))
         .or_else(|_| {
             try_parse_bool(state, offset).map(|(bool, offset)| (TypespecBody::Bool(bool), offset))
         })
@@ -1741,6 +1750,21 @@ fn try_parse_typespec_tuple(state: &PState, offset: usize) -> ParserResult<Types
     Ok((TypespecBody::Tuple(specs), offset))
 }
 
+fn try_parse_typespec_union(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
+    let ((left_name, left), offset) = try_parse_typespec(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "|")?;
+    let ((right_name, right), offset) = try_parse_typespec(state, offset)?;
+
+    Ok((
+        TypespecBody::Union(
+            Box::new(Expression::Typespec(left_name, left)),
+            Box::new(Expression::Typespec(right_name, right)),
+        ),
+        offset,
+    ))
+}
+
 fn try_parse_typespec_call_arguments(state: &PState, offset: usize) -> ParserResult<Vec<Typespec>> {
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
 
@@ -1754,15 +1778,11 @@ fn try_parse_typespec_call_arguments(state: &PState, offset: usize) -> ParserRes
         return Ok((vec![], offset));
     };
 
-    dbg!(offset);
-
     // TODO: support many arguments and empty ones as well
     // TODO: support optional parenthesis
     // TODO: unify these parameters parsing logic somewhere
     let (arguments, offset) =
         try_parse_typespec(state, offset).map(|(spec, offset)| (vec![spec], offset))?;
-
-    dbg!(&arguments, offset);
 
     let offset = if has_parenthesis {
         let (_, offset) = try_parse_grammar_name(state, offset, ")")?;
@@ -1872,8 +1892,11 @@ fn try_parse_list(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "list")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "[")?;
 
+    // Don't allow typespec parser to consume the list cons: `last_elem | cons`
+    *state.expecting_typespec.borrow_mut() = false;
     let (expressions, offset) =
         parse_expressions_sep_by_comma(state, offset).unwrap_or_else(|_| (vec![], offset));
+    *state.expecting_typespec.borrow_mut() = true;
 
     let (expr_before_cons, cons_expr, offset) = match try_parse_list_cons(state, offset) {
         Ok(((expr_before_cons, cons_expr), offset)) => {
@@ -5270,6 +5293,37 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![named_spec!("elems", TypespecBody::Tuple(vec![]))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_union_typespec() {
+        let code = r#"
+        :a | :b
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!(TypespecBody::Union(
+            Box::new(spec!(TypespecBody::Atom("a".to_string()))),
+            Box::new(spec!(TypespecBody::Atom("b".to_string())))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_nested_union_typespec() {
+        let code = r#"
+        :a | :b | :c
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!(TypespecBody::Union(
+            Box::new(spec!(TypespecBody::Atom("a".to_string()))),
+            Box::new(spec!(TypespecBody::Union(
+                Box::new(spec!(TypespecBody::Atom("b".to_string()))),
+                Box::new(spec!(TypespecBody::Atom("c".to_string())))
+            )))
+        ))]);
 
         assert_eq!(result, target);
     }
