@@ -254,12 +254,6 @@ struct CaseArm {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Require {
-    target: Atom,
-    options: Option<List>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
 struct Access {
     target: Box<Expression>,
     access_expression: Box<Expression>,
@@ -273,21 +267,28 @@ struct DotAccess {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Alias {
-    target: Atom,
+    target: Vec<Atom>,
+    // TODO: maybe make empty list by default instead of None
+    options: Option<List>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct Require {
+    target: Vec<Atom>,
     // TODO: maybe make empty list by default instead of None
     options: Option<List>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Use {
-    target: Atom,
+    target: Vec<Atom>,
     // TODO: maybe make empty list by default instead of None
     options: Option<List>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Import {
-    target: Atom,
+    target: Vec<Atom>,
     // TODO: maybe make empty list by default instead of None
     options: Option<List>,
 }
@@ -537,7 +538,10 @@ fn try_parse_module(state: &PState, offset: usize) -> Result<(Expression, usize)
     Ok((module, offset))
 }
 
-fn try_parse_capture_expression_variable(state: &PState, offset: usize) -> ParserResult<Identifier> {
+fn try_parse_capture_expression_variable(
+    state: &PState,
+    offset: usize,
+) -> ParserResult<Identifier> {
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "&")?;
     let (node, offset) = try_parse_grammar_name(state, offset, "integer")?;
@@ -1326,10 +1330,7 @@ fn try_parse_either_token<'a>(
         }
     }
 
-    Err(build_unexpected_token_error(
-        offset,
-        &state.tokens[offset],
-    ))
+    Err(build_unexpected_token_error(offset, &state.tokens[offset]))
 }
 
 fn try_parse_lambda(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -1863,6 +1864,33 @@ fn try_parse_module_name(state: &PState, offset: usize) -> ParserResult<Atom> {
     Ok((Atom(atom_string), offset))
 }
 
+fn try_parse_module_operator_name(state: &PState, offset: usize) -> ParserResult<Vec<Atom>> {
+    try_parse_module_name(state, offset)
+        .map(|(name, offset)| (vec![name], offset))
+        .or_else(|_| try_parse_module_name_qualified_tuples(state, offset))
+}
+
+fn try_parse_module_name_qualified_tuples(
+    state: &PState,
+    offset: usize,
+) -> ParserResult<Vec<Atom>> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "dot")?;
+    let (Atom(base_name), offset) = try_parse_module_name(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, ".")?;
+    let (tuple, offset) = try_parse_tuple(state, offset)?;
+
+    let result = tuple
+        .items
+        .into_iter()
+        .map(|item| match item {
+            Expression::Atom(Atom(name)) => Atom(format!("{}.{}", base_name, name)),
+            _else => panic!("TODO: return proper error"),
+        })
+        .collect();
+
+    Ok((result, offset))
+}
+
 fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     try_parse_module(state, offset)
         .or_else(|err| try_parse_grouping(state, offset).map_err(|_| err))
@@ -2102,11 +2130,11 @@ fn try_parse_module_operator(
     state: &PState,
     offset: usize,
     target: &str,
-) -> ParserResult<(Atom, Option<List>)> {
+) -> ParserResult<(Vec<Atom>, Option<List>)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, target)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
-    let (target_module, offset) = try_parse_module_name(state, offset)?;
+    let (target_module, offset) = try_parse_module_operator_name(state, offset)?;
 
     let (options, offset) = match try_parse_grammar_name(state, offset, ",") {
         Ok((_, offset)) => {
@@ -3837,7 +3865,25 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Require(Require {
-            target: Atom("Logger".to_string()),
+            target: vec![Atom("Logger".to_string())],
+            options: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_require_qualified_tuple() {
+        let code = r#"
+        require MyModule.{A, B, C}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Require(Require {
+            target: vec![
+                Atom("MyModule.A".to_string()),
+                Atom("MyModule.B".to_string()),
+                Atom("MyModule.C".to_string()),
+            ],
             options: None,
         })]);
 
@@ -3851,7 +3897,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Require(Require {
-            target: Atom("Logger".to_string()),
+            target: vec![Atom("Logger".to_string())],
             options: Some(List {
                 items: vec![tuple!(atom!("level"), atom!("info"))],
                 cons: None,
@@ -3868,7 +3914,25 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Alias(Alias {
-            target: Atom("MyModule".to_string()),
+            target: vec![Atom("MyModule".to_string())],
+            options: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_alias_qualified_tuple() {
+        let code = r#"
+        alias MyModule.{A, B, C}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Alias(Alias {
+            target: vec![
+                Atom("MyModule.A".to_string()),
+                Atom("MyModule.B".to_string()),
+                Atom("MyModule.C".to_string()),
+            ],
             options: None,
         })]);
 
@@ -3882,7 +3946,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Alias(Alias {
-            target: Atom("MyKeyword".to_string()),
+            target: vec![Atom("MyKeyword".to_string())],
             options: Some(List {
                 items: vec![tuple!(atom!("as"), atom!("Keyword"))],
                 cons: None,
@@ -3899,7 +3963,24 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Use(Use {
-            target: Atom("MyModule".to_string()),
+            target: vec![Atom("MyModule".to_string())],
+            options: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_use_qualified_tuple() {
+        let code = r#"
+        use Ecto.{Query, Repo}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Use(Use {
+            target: vec![
+                Atom("Ecto.Query".to_string()),
+                Atom("Ecto.Repo".to_string()),
+            ],
             options: None,
         })]);
 
@@ -3913,7 +3994,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Use(Use {
-            target: Atom("MyModule".to_string()),
+            target: vec![Atom("MyModule".to_string())],
             options: Some(List {
                 items: vec![tuple!(atom!("some"), atom!("options"))],
                 cons: None,
@@ -3930,7 +4011,24 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Import(Import {
-            target: Atom("String".to_string()),
+            target: vec![Atom("String".to_string())],
+            options: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_import_qualified_tuple() {
+        let code = r#"
+        import Plug.{Conn, Middleware}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Import(Import {
+            target: vec![
+                Atom("Plug.Conn".to_string()),
+                Atom("Plug.Middleware".to_string()),
+            ],
             options: None,
         })]);
 
@@ -3944,7 +4042,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Import(Import {
-            target: Atom("String".to_string()),
+            target: vec![Atom("String".to_string())],
             options: Some(List {
                 items: vec![tuple!(atom!("only"), list!(atom!("split")))],
                 cons: None,
@@ -4808,7 +4906,6 @@ mod tests {
 // Even though these should be treated as normal expressions as per the new parser ideas
 
 // TODO: support https://hexdocs.pm/elixir/syntax-reference.html#qualified-tuples
-// TODO: Support custom macros such as "schema"
 //
 // TODO: map/struct update syntax
 // TODO: @spec and @type support
