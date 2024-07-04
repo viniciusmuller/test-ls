@@ -1,6 +1,7 @@
 use core::fmt;
 use std::cell::RefCell;
 use std::fmt::Debug;
+use std::path::PathBuf;
 use std::{env, ffi::OsStr, fs, path::Path};
 
 use tree_sitter::{Node, Tree};
@@ -330,29 +331,29 @@ struct Sigil {
 //      | <<_::_*unit>>                 # unit is an integer from 1 to 256
 //      | <<_::size, _::_*unit>>
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-enum TypespecLambda {
-    // (... -> type)
-    Any(Box<Expression>),
-    // (-> type)
-    NoParameters(Box<Expression>),
-    // (a, b -> type)
-    Parameters(Vec<Expression>, Box<Expression>),
-}
+// #[derive(Debug, PartialEq, Eq, Clone)]
+// enum TypespecLambda {
+//     // (... -> type)
+//     Any(Box<Expression>),
+//     // (-> type)
+//     NoParameters(Box<Expression>),
+//     // (a, b -> type)
+//     Parameters(Vec<Expression>, Box<Expression>),
+// }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-enum TypespecListType {
-    /// []
-    Empty,
-    /// [type]
-    Of(Box<Expression>),
-    /// [...]
-    OfAny,
-    /// [type, ...]
-    NonEmptyOf,
-    // [key: value_type]
-    KeywordList(Vec<(Atom, Expression)>),
-}
+// #[derive(Debug, PartialEq, Eq, Clone)]
+// enum TypespecListType {
+//     /// []
+//     Empty,
+//     /// [type]
+//     Of(Box<Expression>),
+//     /// [...]
+//     OfAny,
+//     /// [type, ...]
+//     NonEmptyOf,
+//     // [key: value_type]
+//     KeywordList(Vec<(Atom, Expression)>),
+// }
 
 type Typespec = (Option<String>, TypespecBody);
 
@@ -361,16 +362,20 @@ type Typespec = (Option<String>, TypespecBody);
 enum TypespecBody {
     /// my_spec :: (second_type :: :atom)
     Grouping(Box<Expression>),
-    SimpleCall(Identifier),
-    ParameterizedCall(Identifier, Vec<Expression>),
+    /// integer()
+    LocalType(Identifier, Vec<Expression>),
+    /// String.t()
+    RemoteType(Atom, Identifier, Vec<Expression>),
+    /// :ok | :error
     Union(Box<Expression>, Box<Expression>),
     // literals
     Integer(usize),
     Atom(Atom),
     Bool(bool),
-    Lambda(TypespecLambda),
-    List(TypespecListType),
+    Lambda(Vec<Expression>, Vec<Expression>),
+    List(Vec<Expression>),
     Nil,
+    Any,
     // TODO: range
     Tuple(Vec<Expression>), // TODO: tuples
                             // TODO: maps
@@ -471,31 +476,28 @@ fn main() {
 
     use std::time::Instant;
     let now = Instant::now();
+    let (successes, failures) = walkdir(&args[1]);
+    let elapsed = now.elapsed();
 
-    {
-        walkdir(&args[1]);
+    for path in &successes {
+        println!("succesfully parsed {:?}", path);
     }
 
-    let elapsed = now.elapsed();
+    for path in &failures {
+        println!("failed to parsed {:?}", path);
+    }
+
+    println!(
+        "finished indexing: errors: {} successes: {}",
+        failures.len(),
+        successes.len()
+    );
+
+
     println!("Elapsed: {:.2?}", elapsed);
-
-    // let file_path = args[1].clone();
-    // let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
-    // let result = parse(&contents);
-    // dbg!(&result);
-
-    // println!("Please type something, or x to escape:");
-    // let mut code = String::new();
-
-    //     while code != "x" {
-    //         code.clear();
-    //         io::stdin().read_line(&mut code).unwrap();
-    //         let result = parse(&code);
-    //         dbg!(result);
-    //     }
 }
 
-fn walkdir(path: &str) {
+fn walkdir(path: &str) -> (Vec<String>, Vec<String>) {
     let mut file_paths = Vec::new();
 
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
@@ -517,22 +519,19 @@ fn walkdir(path: &str) {
         .map(|path| (path, parse_file(path)))
         .collect::<Vec<_>>();
 
-    let successes = results.iter().filter(|(_path, e)| e.is_ok());
-    let failures = results.iter().filter(|(_path, e)| e.is_err());
+    let successes = results
+        .iter()
+        .filter(|(_path, e)| e.is_ok())
+        .map(|(path, _)| path.to_str().unwrap().to_owned())
+        .collect();
 
-    for (path, _file) in successes.clone() {
-        println!("succesfully parsed {:?}", path);
-    }
+    let failures = results
+        .iter()
+        .filter(|(_path, e)| e.is_err())
+        .map(|(path, _)| path.to_str().unwrap().to_owned())
+        .collect();
 
-    for (path, _file) in failures.clone() {
-        println!("failed to parsed {:?}", path);
-    }
-
-    println!(
-        "finished indexing: errors: {} successes: {}",
-        failures.count(),
-        successes.count()
-    )
+    return (successes, failures);
 }
 
 fn parse_file(file_path: &Path) -> Result<Expression, ParseError> {
@@ -1060,6 +1059,7 @@ fn try_parse_identifier(state: &PState, offset: usize) -> ParserResult<Identifie
             "use",
             "require",
             "alias",
+            "...",
         ];
         if reserved.contains(&identifier_name.as_str()) {
             return Err(build_unexpected_keyword_error(offset, &token));
@@ -1187,9 +1187,8 @@ fn parse_typespecs_sep_by_comma(state: &PState, offset: usize) -> ParserResult<V
 
 fn try_parse_keyword_expressions(state: &PState, offset: usize) -> ParserResult<List> {
     let (_, offset) = try_parse_grammar_name(state, offset, "keywords")?;
-    let sep_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
 
-    try_parse_sep_by(state, offset, try_parse_keyword_pair, sep_parser).map(|(pairs, offset)| {
+    try_parse_sep_by(state, offset, try_parse_keyword_pair, comma_parser).map(|(pairs, offset)| {
         let tuples = pairs
             .into_iter()
             .map(|(key, value)| {
@@ -1206,6 +1205,32 @@ fn try_parse_keyword_expressions(state: &PState, offset: usize) -> ParserResult<
 
         (list, offset)
     })
+}
+
+// TODO: remove all duplicated code relating expressions vs typespecs
+fn try_parse_keyword_typespecs(state: &PState, offset: usize) -> ParserResult<List> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "keywords")?;
+    let sep_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
+
+    try_parse_sep_by(state, offset, try_parse_keyword_typespec_pair, sep_parser).map(
+        |(pairs, offset)| {
+            let tuples = pairs
+                .into_iter()
+                .map(|(key, value)| {
+                    Expression::Tuple(Tuple {
+                        items: vec![key, value],
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let list = List {
+                items: tuples,
+                cons: None,
+            };
+
+            (list, offset)
+        },
+    )
 }
 
 fn try_parse_sep_by<'a, T, S>(
@@ -1268,6 +1293,33 @@ fn try_parse_keyword_pair(state: &PState, offset: usize) -> ParserResult<(Expres
 
     let (value, offset) = try_parse_expression(state, offset)?;
     let pair = (Expression::Atom(atom), value);
+    Ok((pair, offset))
+}
+
+fn try_parse_keyword_typespec_pair(
+    state: &PState,
+    offset: usize,
+) -> ParserResult<(Expression, Expression)> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "pair")?;
+
+    let (atom, offset) = match try_parse_grammar_name(state, offset, "keyword") {
+        Ok((atom_node, offset)) => {
+            let atom_text = extract_node_text(&state.code, &atom_node);
+            // transform atom string from `atom: ` into `atom`
+            let clean_atom = atom_text
+                .split_whitespace()
+                .collect::<String>()
+                .strip_suffix(':')
+                .unwrap()
+                .to_string();
+
+            (clean_atom, offset)
+        }
+        Err(_) => try_parse_quoted_keyword(state, offset)?,
+    };
+
+    let ((name, spec), offset) = try_parse_typespec(state, offset)?;
+    let pair = (Expression::Atom(atom), Expression::Typespec(name, spec));
     Ok((pair, offset))
 }
 
@@ -1685,16 +1737,19 @@ fn try_parse_typespec_body(state: &PState, offset: usize) -> ParserResult<Typesp
         .or_else(|_| {
             try_parse_atom(state, offset).map(|(atom, offset)| (TypespecBody::Atom(atom), offset))
         })
-        .or_else(|_| try_parse_typespec_call(state, offset))
+        .or_else(|_| try_parse_local_type_call(state, offset))
+        .or_else(|_| try_parse_remote_type(state, offset))
         .or_else(|_| try_parse_typespec_grouping(state, offset))
         .or_else(|_| try_parse_typespec_tuple(state, offset))
+        .or_else(|_| try_parse_typespec_list(state, offset))
         .or_else(|_| try_parse_typespec_union(state, offset))
+        .or_else(|_| try_parse_wildcard_typespec(state, offset))
         .or_else(|_| {
             try_parse_bool(state, offset).map(|(bool, offset)| (TypespecBody::Bool(bool), offset))
         })
         .or_else(|_| {
             try_parse_identifier(state, offset)
-                .map(|(target, offset)| (TypespecBody::SimpleCall(target), offset))
+                .map(|(target, offset)| (TypespecBody::LocalType(target, vec![]), offset))
         })
         .or_else(|_| {
             try_parse_named_typespec(state, offset).map(|((name, spec), offset)| {
@@ -1707,7 +1762,13 @@ fn try_parse_typespec_body(state: &PState, offset: usize) -> ParserResult<Typesp
     Ok((body, offset))
 }
 
-fn try_parse_typespec_call(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+fn try_parse_wildcard_typespec(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "identifier")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "...")?;
+    Ok((TypespecBody::Any, offset))
+}
+
+fn try_parse_local_type_call(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (callee, offset) = try_parse_identifier(state, offset)?;
     let (arguments, offset) = try_parse_typespec_call_arguments(state, offset)?;
@@ -1716,13 +1777,27 @@ fn try_parse_typespec_call(state: &PState, offset: usize) -> ParserResult<Typesp
         .map(|(name, spec)| Expression::Typespec(name, spec))
         .collect::<Vec<_>>();
 
-    let (result, offset) = if arguments.is_empty() {
-        (TypespecBody::SimpleCall(callee), offset)
-    } else {
-        (TypespecBody::ParameterizedCall(callee, arguments), offset)
-    };
+    Ok((TypespecBody::LocalType(callee, arguments), offset))
+}
 
-    Ok((result, offset))
+fn try_parse_remote_type(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "dot")?;
+    let (remote_callee, offset) = try_parse_module_name(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, ".")?;
+    let (local_callee, offset) = try_parse_identifier(state, offset)?;
+    let (arguments, offset) =
+        try_parse_typespec_call_arguments(state, offset).unwrap_or((vec![], offset));
+
+    let arguments = arguments
+        .into_iter()
+        .map(|(name, spec)| Expression::Typespec(name, spec))
+        .collect();
+
+    Ok((
+        TypespecBody::RemoteType(remote_callee, local_callee, arguments),
+        offset,
+    ))
 }
 
 fn try_parse_typespec_grouping(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
@@ -1748,6 +1823,42 @@ fn try_parse_typespec_tuple(state: &PState, offset: usize) -> ParserResult<Types
     let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
 
     Ok((TypespecBody::Tuple(specs), offset))
+}
+
+fn try_parse_typespec_list(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "list")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "[")?;
+
+    let (expressions, offset) =
+        parse_typespecs_sep_by_comma(state, offset).unwrap_or_else(|_| (vec![], offset));
+
+    let expressions = expressions
+        .into_iter()
+        .map(|(name, spec)| Expression::Typespec(name, spec))
+        .collect::<Vec<_>>();
+
+    // TODO: handle cons here?
+    let (expr_before_cons, cons_expr, offset) = match try_parse_list_cons(state, offset) {
+        Ok(((expr_before_cons, cons_expr), offset)) => {
+            (Some(expr_before_cons), Some(Box::new(cons_expr)), offset)
+        }
+        Err(_) => (None, None, offset),
+    };
+
+    let (keyword, offset) = try_parse_keyword_typespecs(state, offset)
+        .map(|(keyword, offset)| (Some(Expression::List(keyword)), offset))
+        .unwrap_or_else(|_| (None, offset));
+
+    let (_, offset) = try_parse_grammar_name(state, offset, "]")?;
+    let expressions = expressions
+        .into_iter()
+        .chain(expr_before_cons)
+        .chain(keyword)
+        .collect();
+
+    let list = TypespecBody::List(expressions);
+
+    Ok((list, offset))
 }
 
 fn try_parse_typespec_union(state: &PState, offset: usize) -> ParserResult<TypespecBody> {
@@ -1909,6 +2020,8 @@ fn try_parse_list(state: &PState, offset: usize) -> ParserResult<Expression> {
         .map(|(keyword, offset)| (Some(Expression::List(keyword)), offset))
         .unwrap_or_else(|_| (None, offset));
 
+    // dbg!(&keyword);
+
     let (_, offset) = try_parse_grammar_name(state, offset, "]")?;
     let expressions = expressions
         .into_iter()
@@ -1949,7 +2062,9 @@ fn try_parse_attribute_definition(state: &PState, offset: usize) -> ParserResult
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (attribute_name, offset) = try_parse_identifier(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
-    let (value, offset) = try_parse_expression(state, offset)?;
+    let (value, offset) = try_parse_keyword_expressions(state, offset)
+        .map(|(list, offset)| (Expression::List(list), offset))
+        .or_else(|_| try_parse_expression(state, offset))?;
 
     Ok((
         Attribute {
@@ -2140,7 +2255,6 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
                 .map_err(|_| err)
         })
         .or_else(|err| try_parse_quoted_atom(state, offset).map_err(|_| err))
-        .or_else(|err| try_parse_list(state, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_tuple(state, offset)
                 .map(|(tuple, offset)| (Expression::Tuple(tuple), offset))
@@ -2157,6 +2271,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
                 .map(|(attribute, offset)| (Expression::AttributeRef(attribute), offset))
                 .map_err(|_| err)
         })
+        .or_else(|err| try_parse_list(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_binary_operator(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_range(state, offset).map_err(|_| err))
         .or_else(|err| {
@@ -3546,6 +3661,23 @@ mod tests {
         let target = Block(vec![Expression::AttributeDef(Attribute {
             name: "timeout".to_string(),
             value: Box::new(int!(5000)),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_attribute_expression() {
+        let code = "
+        @compile inline: [now: 0]
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::AttributeDef(Attribute {
+            name: "compile".to_string(),
+            value: Box::new(list!(tuple!(
+                atom!("inline"),
+                list!(tuple!(atom!("now"), int!(0)))
+            ))),
         })]);
 
         assert_eq!(result, target);
@@ -5234,7 +5366,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![named_spec!(
             "numberino",
-            TypespecBody::SimpleCall("integer".to_string())
+            TypespecBody::LocalType("integer".to_string(), vec![])
         )]);
 
         assert_eq!(result, target);
@@ -5254,9 +5386,12 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![named_spec!(
             "numbers",
-            TypespecBody::ParameterizedCall(
+            TypespecBody::LocalType(
                 "list".to_string(),
-                vec![spec!(TypespecBody::SimpleCall("integer".to_string()))]
+                vec![spec!(TypespecBody::LocalType(
+                    "integer".to_string(),
+                    vec![]
+                ))]
             )
         )]);
 
@@ -5278,8 +5413,8 @@ mod tests {
         let target = Block(vec![named_spec!(
             "elems",
             TypespecBody::Tuple(vec![
-                spec!(TypespecBody::SimpleCall("integer".to_string())),
-                spec!(TypespecBody::SimpleCall("string".to_string())),
+                spec!(TypespecBody::LocalType("integer".to_string(), vec![])),
+                spec!(TypespecBody::LocalType("string".to_string(), vec![])),
             ])
         )]);
 
@@ -5324,6 +5459,117 @@ mod tests {
                 Box::new(spec!(TypespecBody::Atom("c".to_string())))
             )))
         ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_any() {
+        let code = r#"
+        ...
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![spec!(TypespecBody::Any)]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_list() {
+        let code = r#"
+        type :: [integer()]
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![named_spec!(
+            "type",
+            TypespecBody::List(vec![spec!(TypespecBody::LocalType(
+                "integer".to_string(),
+                vec![]
+            ))])
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_list_empty() {
+        let code = r#"
+        type :: []
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![named_spec!("type", TypespecBody::List(vec![]))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_list_keyword() {
+        let code = r#"
+        type :: [key: integer]
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![named_spec!(
+            "type",
+            TypespecBody::List(vec![list!(tuple!(
+                atom!("key"),
+                spec!(TypespecBody::LocalType("integer".to_string(), vec![]))
+            ))])
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_non_empty_of() {
+        let code = r#"
+        type :: [node(), ...]
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![named_spec!(
+            "type",
+            TypespecBody::List(vec![
+                spec!(TypespecBody::LocalType("node".to_string(), vec![])),
+                spec!(TypespecBody::Any)
+            ])
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_remote_types() {
+        let code = r#"
+        type :: String.t()
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![named_spec!(
+            "type",
+            TypespecBody::RemoteType("String".to_string(), "t".to_string(), vec![])
+        )]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        type :: String.t
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_remote_types_with_params() {
+        let code = r#"
+        type :: Enum.list(t)
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![named_spec!(
+            "type",
+            TypespecBody::RemoteType(
+                "Enum".to_string(),
+                "list".to_string(),
+                vec![spec!(TypespecBody::LocalType("t".to_string(), vec![]))]
+            )
+        )]);
 
         assert_eq!(result, target);
     }
