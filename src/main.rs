@@ -61,6 +61,7 @@ struct Tuple {
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Map {
     entries: Vec<(Expression, Expression)>,
+    updated: Option<Box<Expression>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -802,7 +803,8 @@ fn try_parse_do_keyword(state: &PState, offset: u64) -> ParserResult<Expression>
             if tuple.items[0] == do_atom && tuple.items.len() == 2 {
                 Ok((list!(Expression::Tuple(tuple)), offset))
             } else {
-                // TODO: return normal error here and dont panic
+                // TODO: might have to check bounds here
+                // TODO: figure out a better way of always checking bounds
                 let node = state.tokens[offset as usize];
                 return Err(build_unexpected_token_error(offset, &node));
             }
@@ -940,14 +942,19 @@ fn try_parse_parameters(state: &PState, offset: u64) -> ParserResult<Vec<Paramet
 fn try_parse_parameter(state: &PState, offset: u64) -> ParserResult<Parameter> {
     match try_parse_parameter_default_value(state, offset) {
         Ok(result) => Ok(result),
-        Err(_) => try_parse_expression(state, offset).map(|(expr, offset)| {
-            let expr = Parameter {
-                expression: Box::new(expr),
-                default: None,
-            };
+        Err(_) => try_parse_expression(state, offset)
+            .or_else(|_| {
+                try_parse_keyword_expressions(state, offset)
+                    .map(|(list, offset)| (Expression::List(list), offset))
+            })
+            .map(|(expr, offset)| {
+                let expr = Parameter {
+                    expression: Box::new(expr),
+                    default: None,
+                };
 
-            (expr, offset)
-        }),
+                (expr, offset)
+            }),
     }
 }
 
@@ -1595,11 +1602,13 @@ fn try_parse_map(state: &PState, offset: u64) -> ParserResult<Map> {
     let (_, offset) = try_parse_grammar_name(state, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
 
-    // TODO: why is this the only case with a very weird and different grammar_name than what's
-    // shown on debug? dbg!() for the Node says it's map_content but it's rather _items_with_trailing_separator
     let offset = try_consume(state, offset, |state, offset| {
         try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
     });
+
+    let (updated, offset) = try_parse_map_update(state, offset)
+        .map(|(updated, offset)| (Some(Box::new(updated)), offset))
+        .unwrap_or((None, offset));
 
     let key_value_parser = |state, offset| try_parse_specific_binary_operator(state, offset, "=>");
     let comma_parser = |tokens, offset| try_parse_grammar_name(tokens, offset, ",");
@@ -1614,7 +1623,11 @@ fn try_parse_map(state: &PState, offset: u64) -> ParserResult<Map> {
 
     let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
     let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
-    let map = Map { entries: pairs };
+    let map = Map {
+        entries: pairs,
+        updated,
+    };
+
     Ok((map, offset))
 }
 
@@ -1625,8 +1638,6 @@ fn try_parse_struct(state: &PState, offset: u64) -> ParserResult<Struct> {
     let (struct_name, offset) = try_parse_module_name(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
 
-    // TODO: why is this the only case with a very weird and different grammar_name than what's
-    // shown on debug? dbg!() for the Node says it's map_content but it's rather _items_with_trailing_separator
     let offset = try_consume(state, offset, |state, offset| {
         try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
     });
@@ -1643,6 +1654,13 @@ fn try_parse_struct(state: &PState, offset: u64) -> ParserResult<Struct> {
         entries: keyword_pairs,
     };
     Ok((s, offset))
+}
+
+fn try_parse_map_update(state: &PState, offset: u64) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
+    let (updated, offset) = try_parse_expression(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "|")?;
+    Ok((updated, offset))
 }
 
 fn convert_keyword_expression_lists_to_tuples(list: List) -> Vec<(Expression, Expression)> {
@@ -2742,6 +2760,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_function_keyword_parameters() {
+        let code = "
+         defp do_on_ce(do: block) do
+           do_on_ee(do: nil, else: block)
+         end
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionDef(Function {
+            name: Identifier("do_on_ce".to_string()),
+            is_private: true,
+            body: Box::new(call!(
+                id!("do_on_ee"),
+                list!(
+                    tuple!(atom!("do"), nil!()),
+                    tuple!(atom!("else"), id!("block"))
+                )
+            )),
+            guard_expression: None,
+            parameters: vec![Parameter {
+                expression: Box::new(list!(tuple!(atom!("do"), id!("block")))),
+                default: None,
+            }],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_multiple_modules_definition() {
         let code = "
         defmodule Test.CustomModule do
@@ -2866,6 +2912,7 @@ mod tests {
             parameters: vec![Parameter {
                 expression: Box::new(Expression::Map(Map {
                     entries: vec![(atom!("a"), id!("value"))],
+                    updated: None,
                 })),
                 default: None,
             }],
@@ -3100,6 +3147,52 @@ mod tests {
                 (atom!("b"), bool!(true)),
                 (atom!("c"), nil!()),
             ],
+            updated: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_map_update_atom_key() {
+        let code = "
+        %{map | a: true}
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Map(Map {
+            entries: vec![(atom!("a"), bool!(true))],
+            updated: Some(Box::new(id!("map"))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_map_update_string_key() {
+        let code = r#"
+        %{map | "string" => true}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Map(Map {
+            entries: vec![(string!("string"), bool!(true))],
+            updated: Some(Box::new(id!("map"))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_map_literal_update() {
+        let code = r#"
+        %{%{"string" => false} | "string" => true}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Map(Map {
+            entries: vec![(string!("string"), bool!(true))],
+            updated: Some(Box::new(Expression::Map(Map {
+                entries: vec![(string!("string"), bool!(false))],
+                updated: None,
+            }))),
         })]);
 
         assert_eq!(result, target);
@@ -3118,6 +3211,7 @@ mod tests {
                 (Expression::String("key".to_owned()), nil!()),
                 (int!(10), int!(30)),
             ],
+            updated: None,
         })]);
 
         assert_eq!(result, target);
@@ -3136,6 +3230,7 @@ mod tests {
                 (atom!("key"), int!(50)),
                 (atom!("Map"), nil!()),
             ],
+            updated: None,
         })]);
 
         assert_eq!(result, target);
@@ -3153,6 +3248,7 @@ mod tests {
                 (atom!("a"), int!(10)),
                 (atom!("myweb@site.com"), bool!(true)),
             ],
+            updated: None,
         })]);
 
         assert_eq!(result, target);
@@ -3162,7 +3258,10 @@ mod tests {
     fn parse_empty_map() {
         let code = "%{}";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Map(Map { entries: vec![] })]);
+        let target = Block(vec![Expression::Map(Map {
+            entries: vec![],
+            updated: None,
+        })]);
 
         assert_eq!(result, target);
     }
@@ -3176,7 +3275,10 @@ mod tests {
         }
         ";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Map(Map { entries: vec![] })]);
+        let target = Block(vec![Expression::Map(Map {
+            entries: vec![],
+            updated: None,
+        })]);
 
         assert_eq!(result, target);
     }
@@ -4177,6 +4279,7 @@ mod tests {
         let target = Block(vec![Expression::DotAccess(DotAccess {
             body: Box::new(Expression::Map(Map {
                 entries: vec![(atom!("a"), int!(10))],
+                updated: None,
             })),
             key: Identifier("a".to_string()),
         })]);
@@ -4205,15 +4308,17 @@ mod tests {
         fn %{a: 10} -> 10 end
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Lambda(Lambda {
+        let vec = vec![Expression::Lambda(Lambda {
             clauses: vec![LambdaClause {
                 arguments: vec![Expression::Map(Map {
                     entries: vec![(atom!("a"), int!(10))],
+                    updated: None,
                 })],
                 body: int!(10),
                 guard: None,
             }],
-        })]);
+        })];
+        let target = Block(vec);
 
         assert_eq!(result, target);
     }
@@ -4654,8 +4759,6 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: test parsing for each of the supported optional blocks
-
     #[test]
     fn parse_custom_block_expressions_optional_blocks() {
         let code = r#"
@@ -4706,16 +4809,13 @@ mod tests {
 
 // TODO: support https://hexdocs.pm/elixir/syntax-reference.html#qualified-tuples
 // TODO: Support custom macros such as "schema"
-
-// TODO: refactor how do-end are parsed and handled according to https://hexdocs.pm/elixir/syntax-reference.html#do-end-blocks
 //
-// TODO: parse typespecs
-// parse them as string content for now
+// TODO: map/struct update syntax
+// TODO: @spec and @type support
 //
-// TODO: macro for call structure
+// TODO: refactor parser to remove Identifier() and Atom() wrapper types, treat them as strings
+//
 // TODO: separate remote from local calls in the Expression enum?
-
-// TODO: make existing try_parse_do_block support keyword notation as well
 
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
