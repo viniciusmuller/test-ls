@@ -234,6 +234,12 @@ struct CaseExpression {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+struct WithExpression {
+    do_block: Box<Expression>,
+    match_clauses: Vec<(Expression, Expression)>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct CondExpression {
     arms: Vec<CondArm>,
 }
@@ -395,6 +401,7 @@ enum Expression {
     If(ConditionalExpression),
     Unless(ConditionalExpression),
     Case(CaseExpression),
+    With(WithExpression),
     Cond(CondExpression),
     Access(Access),
     DotAccess(DotAccess),
@@ -1327,6 +1334,23 @@ fn try_parse_cond_expression(state: &PState, offset: usize) -> ParserResult<Expr
     Ok((Expression::Cond(case), offset))
 }
 
+fn try_parse_with_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+    let (_, offset) = try_parse_keyword(state, offset, "with")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
+    *state.expecting_do.borrow_mut() = false;
+    let ((left, right), offset) = try_parse_specific_binary_operator(state, offset, "<-")?;
+    *state.expecting_do.borrow_mut() = true;
+    let (block, offset) = try_parse_do_block(state, offset)?;
+
+    let with = WithExpression {
+        do_block: Box::new(block),
+        match_clauses: vec![(left, right)],
+    };
+
+    Ok((Expression::With(with), offset))
+}
+
 fn try_parse_access_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "access_call")?;
     let (target, offset) = try_parse_expression(state, offset)?;
@@ -2205,6 +2229,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
         .or_else(|err| try_parse_unless_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_case_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_cond_expression(state, offset).map_err(|_| err))
+        .or_else(|err| try_parse_with_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_access_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_lambda(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_sigil(state, offset).map_err(|_| err))
@@ -2742,7 +2767,18 @@ macro_rules! call {
     };
 }
 
-// #[macro_export]
+#[macro_export]
+macro_rules! call_no_args {
+    ( $target:expr ) => {
+        Expression::Call(Call {
+            target: Box::new($target),
+            remote_callee: None,
+            arguments: vec![],
+        })
+    };
+}
+
+#[macro_export]
 macro_rules! _type {
     ( $body:expr ) => {
         Expression::Typedef($body)
@@ -5655,6 +5691,7 @@ mod tests {
         assert_eq!(result, target);
     }
 
+    /// TODO: Evaluate and add more test cases if necessary
     #[test]
     fn parse_spec_definition() {
         let code = r#"
@@ -5674,6 +5711,32 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_simple_with() {
+        let code = r#"
+        with true <- func?() do
+            :ok
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::With(WithExpression {
+            do_block: Box::new(list!(tuple!(atom!("do"), atom!("ok")))),
+            match_clauses: vec![(bool!(true), call_no_args!(id!("func?")))],
+        })]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        with true <- func?(), do: :ok
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    // TODO: parse with_else
+    //
+    // TODO: parse with_multiple_matches
 }
 
 // TODO: support specs with guards for @specs
