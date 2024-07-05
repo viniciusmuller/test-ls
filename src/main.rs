@@ -234,9 +234,15 @@ struct CaseExpression {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+enum WithClause {
+    Binding(Expression, Expression),
+    Match(Expression, Expression),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct WithExpression {
     do_block: Box<Expression>,
-    match_clauses: Vec<(Expression, Expression)>,
+    match_clauses: Vec<WithClause>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1338,14 +1344,25 @@ fn try_parse_with_expression(state: &PState, offset: usize) -> ParserResult<Expr
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "with")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
+
     *state.expecting_do.borrow_mut() = false;
-    let ((left, right), offset) = try_parse_specific_binary_operator(state, offset, "<-")?;
+    let clause_parser = |state, offset| {
+        try_parse_specific_binary_operator(state, offset, "<-")
+            .map(|((left, right), offset)| (WithClause::Match(left, right), offset))
+            .or_else(|_| {
+                try_parse_specific_binary_operator(state, offset, "=")
+                    .map(|((left, right), offset)| (WithClause::Binding(left, right), offset))
+            })
+    };
+    let (arguments, offset) = try_parse_sep_by(state, offset, clause_parser, comma_parser)?;
     *state.expecting_do.borrow_mut() = true;
-    let (block, offset) = try_parse_do_block(state, offset)?;
+
+    let offset = try_consume(state, offset, comma_parser);
+    let (block, offset) = try_parse_do(state, offset)?;
 
     let with = WithExpression {
         do_block: Box::new(block),
-        match_clauses: vec![(left, right)],
+        match_clauses: arguments,
     };
 
     Ok((Expression::With(with), offset))
@@ -5722,7 +5739,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::With(WithExpression {
             do_block: Box::new(list!(tuple!(atom!("do"), atom!("ok")))),
-            match_clauses: vec![(bool!(true), call_no_args!(id!("func?")))],
+            match_clauses: vec![(WithClause::Match(bool!(true), call_no_args!(id!("func?"))))],
         })]);
 
         assert_eq!(result, target);
@@ -5734,9 +5751,67 @@ mod tests {
         assert_eq!(result, target);
     }
 
+    #[test]
+    fn parse_with_multiple_clauses() {
+        let code = r#"
+        with true <- func?(),
+             {:ok, result} <- other_func() do
+            :ok
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::With(WithExpression {
+            do_block: Box::new(list!(tuple!(atom!("do"), atom!("ok")))),
+            match_clauses: vec![
+                WithClause::Match(bool!(true), call_no_args!(id!("func?"))),
+                WithClause::Match(
+                    tuple!(atom!("ok"), id!("result")),
+                    call_no_args!(id!("other_func")),
+                ),
+            ],
+        })]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        with true <- func?(),
+             {:ok, result} <- other_func(), do: :ok
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_with_binding_clauses() {
+        let code = r#"
+        with a = to_string(x),
+             {:ok, result} <- other_func(a) do
+            :ok
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::With(WithExpression {
+            do_block: Box::new(list!(tuple!(atom!("do"), atom!("ok")))),
+            match_clauses: vec![
+                WithClause::Binding(id!("a"), call!(id!("to_string"), id!("x"))),
+                WithClause::Match(
+                    tuple!(atom!("ok"), id!("result")),
+                    call!(id!("other_func"), id!("a")),
+                ),
+            ],
+        })]);
+
+        assert_eq!(result, target);
+
+        let code = r#"
+        with a = to_string(x),
+             {:ok, result} <- other_func(a), do: :ok
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
     // TODO: parse with_else
-    //
-    // TODO: parse with_multiple_matches
 }
 
 // TODO: support specs with guards for @specs
