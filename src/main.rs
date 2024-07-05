@@ -2751,6 +2751,16 @@ fn extract_node_text(code: &str, node: &Node) -> String {
 }
 
 #[macro_export]
+macro_rules! _do {
+    ($body:expr) => {
+        Expression::Do(Do {
+            body: Box::new($body),
+            optional_block: None,
+        })
+    };
+}
+
+#[macro_export]
 macro_rules! atom {
     ($x:expr) => {
         Expression::Atom($x.to_string())
@@ -3230,7 +3240,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Module(Module {
             name: "Test.CustomModule".to_string(),
-            body: Box::new(Expression::Block(vec![])),
+            body: Box::new(_do!(Expression::Block(vec![]))),
         })]);
 
         assert_eq!(result, target);
@@ -3247,13 +3257,13 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: "do_on_ce".to_string(),
             is_private: true,
-            body: Box::new(call!(
+            body: Box::new(_do!(call!(
                 id!("do_on_ee"),
                 list!(
                     tuple!(atom!("do"), nil!()),
                     tuple!(atom!("else"), id!("block"))
                 )
-            )),
+            ))),
             guard_expression: None,
             parameters: vec![Parameter {
                 expression: Box::new(list!(tuple!(atom!("do"), id!("block")))),
@@ -3279,11 +3289,11 @@ mod tests {
         let target = Block(vec![
             Expression::Module(Module {
                 name: "Test.CustomModule".to_string(),
-                body: Box::new(Expression::Block(vec![])),
+                body: Box::new(_do!(Expression::Block(vec![]))),
             }),
             Expression::Module(Module {
                 name: "Test.SecondModule".to_string(),
-                body: Box::new(Expression::Block(vec![])),
+                body: Box::new(_do!(Expression::Block(vec![]))),
             }),
         ]);
 
@@ -3307,22 +3317,22 @@ mod tests {
 
         let target = Block(vec![Expression::Module(Module {
             name: "Test.CustomModule".to_string(),
-            body: Box::new(Block(vec![
+            body: Box::new(_do!(Block(vec![
                 Expression::FunctionDef(Function {
                     name: "func".to_string(),
                     is_private: false,
                     parameters: vec![],
-                    body: Box::new(call_no_args!(id!("priv_func"))),
+                    body: Box::new(_do!(call_no_args!(id!("priv_func")))),
                     guard_expression: None,
                 }),
                 Expression::FunctionDef(Function {
                     name: "priv_func".to_string(),
                     is_private: true,
                     parameters: vec![],
-                    body: Box::new(int!(10)),
+                    body: Box::new(_do!(int!(10))),
                     guard_expression: None,
                 }),
-            ])),
+            ]))),
         })]);
 
         assert_eq!(result, target);
@@ -3343,7 +3353,7 @@ mod tests {
                 expression: Box::new(id!("a")),
                 default: Some(Box::new(int!(10))),
             }],
-            body: Box::new(int!(10)),
+            body: Box::new(_do!(int!(10))),
             guard_expression: None,
         })]);
 
@@ -3362,7 +3372,7 @@ mod tests {
             name: "func".to_string(),
             is_private: false,
             parameters: vec![],
-            body: Box::new(call_no_args!(id!("priv_func"))),
+            body: Box::new(_do!(call_no_args!(id!("priv_func")))),
             guard_expression: None,
         })]);
 
@@ -3385,7 +3395,7 @@ mod tests {
                 })),
                 default: None,
             }],
-            body: Box::new(id!("value")),
+            body: Box::new(_do!(id!("value"))),
             guard_expression: None,
         })]);
 
@@ -3407,7 +3417,11 @@ mod tests {
                 expression: Box::new(id!("a")),
                 default: None,
             }],
-            body: Box::new(binary_operation!(id!("a"), BinaryOperator::Equal, int!(10))),
+            body: Box::new(_do!(binary_operation!(
+                id!("a"),
+                BinaryOperator::Equal,
+                int!(10)
+            ))),
             guard_expression: Some(Box::new(call!(id!("is_integer"), id!("a")))),
         })]);
 
@@ -3431,7 +3445,7 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: "func".to_string(),
             is_private: false,
-            body: Box::new(Block(vec![])),
+            body: Box::new(_do!(Block(vec![]))),
             parameters: vec![],
             guard_expression: None,
         })]);
@@ -3449,7 +3463,7 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: "func".to_string(),
             is_private: false,
-            body: Box::new(Block(vec![])),
+            body: Box::new(_do!(Block(vec![]))),
             parameters: vec![
                 Parameter {
                     expression: Box::new(id!("a")),
@@ -3486,7 +3500,11 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: "func".to_string(),
             is_private: false,
-            body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
+            body: Box::new(_do!(binary_operation!(
+                id!("a"),
+                BinaryOperator::Plus,
+                id!("b")
+            ))),
             parameters: vec![
                 Parameter {
                     expression: Box::new(id!("a")),
@@ -3802,7 +3820,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Module(Module {
             name: "MyModule".to_string(),
-            body: Box::new(Expression::Block(vec![
+            body: Box::new(_do!(Expression::Block(vec![
                 Expression::AttributeDef(Attribute {
                     name: "moduledoc".to_string(),
                     value: Box::new(Expression::String(
@@ -3818,11 +3836,11 @@ mod tests {
                 Expression::FunctionDef(Function {
                     name: "func".to_string(),
                     is_private: false,
-                    body: Box::new(int!(10)),
+                    body: Box::new(_do!(int!(10))),
                     parameters: vec![],
                     guard_expression: None,
                 }),
-            ])),
+            ]))),
         })]);
 
         assert_eq!(result, target);
@@ -5011,7 +5029,11 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Quote(Quote {
             options: None,
-            body: Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
+            body: Box::new(_do!(binary_operation!(
+                int!(1),
+                BinaryOperator::Plus,
+                int!(1)
+            ))),
         })]);
 
         assert_eq!(result, target);
@@ -5031,7 +5053,11 @@ mod tests {
                 items: vec![tuple!(atom!("line"), int!(10))],
                 cons: None,
             }),
-            body: Box::new(binary_operation!(int!(1), BinaryOperator::Plus, int!(1))),
+            body: Box::new(_do!(binary_operation!(
+                int!(1),
+                BinaryOperator::Plus,
+                int!(1)
+            ))),
         })]);
 
         assert_eq!(result, target);
@@ -5096,7 +5122,7 @@ mod tests {
         let target = Block(vec![Expression::MacroDef(Macro {
             name: "my_macro".to_string(),
             is_private: false,
-            body: Box::new(Expression::Block(vec![])),
+            body: Box::new(_do!(Expression::Block(vec![]))),
             guard_expression: None,
             parameters: vec![],
         })]);
@@ -5123,7 +5149,11 @@ mod tests {
         let target = Block(vec![Expression::MacroDef(Macro {
             name: "my_macro".to_string(),
             is_private: false,
-            body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
+            body: Box::new(_do!(binary_operation!(
+                id!("a"),
+                BinaryOperator::Plus,
+                id!("b")
+            ))),
             guard_expression: None,
             parameters: vec![
                 Parameter {
@@ -5161,7 +5191,11 @@ mod tests {
         let target = Block(vec![Expression::MacroDef(Macro {
             name: "my_macro".to_string(),
             is_private: false,
-            body: Box::new(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
+            body: Box::new(_do!(binary_operation!(
+                id!("a"),
+                BinaryOperator::Plus,
+                id!("b")
+            ))),
             guard_expression: None,
             parameters: vec![
                 Parameter {
@@ -5187,9 +5221,8 @@ mod tests {
         let target = Block(vec![Expression::MacroDef(Macro {
             name: "my_macro".to_string(),
             is_private: false,
-            body: Box::new(bool!(true)),
+            body: Box::new(_do!(bool!(true))),
             guard_expression: Some(Box::new(call!(id!("is_integer"), id!("x")))),
-
             parameters: vec![Parameter {
                 expression: Box::new(id!("x")),
                 default: None,
@@ -5228,7 +5261,7 @@ mod tests {
                 expression: Box::new(id!("a")),
                 default: Some(Box::new(int!(10))),
             }],
-            body: Box::new(int!(10)),
+            body: Box::new(_do!(int!(10))),
             guard_expression: None,
         })]);
 
@@ -5375,7 +5408,7 @@ mod tests {
         end
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![call!(id!("my_op"), int!(10))]);
+        let target = Block(vec![call!(id!("my_op"), _do!(int!(10)))]);
 
         assert_eq!(result, target);
     }
