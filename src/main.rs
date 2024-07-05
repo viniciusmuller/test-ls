@@ -77,6 +77,7 @@ struct Attribute {
 struct Call {
     target: Box<Expression>,
     remote_callee: Option<Box<Expression>>,
+    do_block: Option<Do>,
     arguments: Vec<Expression>,
 }
 
@@ -220,16 +221,24 @@ struct UnaryOperation {
     operand: Box<Expression>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum OptionalBlockType {
     Else,
     Rescue,
     Catch,
     After,
-    // Custom(Expression), custom needed?
+    // Custom(String), custom needed?
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct Do {
+    body: Box<Expression>,
+    optional_block: Option<OptionalBlock>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct OptionalBlock {
-    block: Expression,
+    block: Box<Expression>,
     block_type: OptionalBlockType,
 }
 
@@ -437,6 +446,7 @@ enum Expression {
     Quote(Quote),
     MacroDef(Macro),
     Call(Call),
+    Do(Do),
 }
 
 // TODO: Create Parser struct abstraction to hold things such as code, filename
@@ -507,6 +517,11 @@ fn main() {
         "finished indexing: errors: {} successes: {}",
         failures.len(),
         successes.len()
+    );
+
+    println!(
+        "successes total size: {} bytes",
+        std::mem::size_of_val(&*successes)
     );
 
     println!("Elapsed: {:.2?}", elapsed);
@@ -591,11 +606,11 @@ fn try_parse_module(state: &PState, offset: usize) -> Result<(Expression, usize)
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (module_name, offset) = try_parse_module_name(state, offset)?;
 
-    let ((do_block, _), offset) = try_parse_do(state, offset)?;
+    let (do_block, offset) = try_parse_do(state, offset)?;
 
     let module = Expression::Module(Module {
         name: module_name,
-        body: Box::new(do_block),
+        body: Box::new(Expression::Do(do_block)),
     });
     Ok((module, offset))
 }
@@ -694,11 +709,11 @@ fn try_parse_quote_block(state: &PState, offset: usize) -> ParserResult<Expressi
         .map(|(opts, offset)| (Some(opts), offset))
         .unwrap_or((None, offset));
 
-    let ((do_block, _), offset) = try_parse_do(state, offset)?;
+    let (do_block, offset) = try_parse_do(state, offset)?;
 
     let capture = Expression::Quote(Quote {
         options,
-        body: Box::new(do_block),
+        body: Box::new(Expression::Do(do_block)),
     });
 
     Ok((capture, offset))
@@ -806,14 +821,12 @@ fn try_parse_function_definition(state: &PState, offset: usize) -> ParserResult<
     if let Ok(((guard_expr, parameters, function_name), offset)) =
         try_parse_function_guard(state, offset)
     {
-        let offset = try_consume(state, offset, |state, offset| {
-            try_parse_grammar_name(state, offset, ",")
-        });
-        let ((do_block, _), offset) = try_parse_do(state, offset)?;
+        let offset = try_consume(state, offset, comma_parser);
+        let (do_block, offset) = try_parse_do(state, offset)?;
 
         let function = Expression::FunctionDef(Function {
             name: function_name,
-            body: Box::new(do_block),
+            body: Box::new(Expression::Do(do_block)),
             guard_expression: Some(Box::new(guard_expr)),
             parameters,
             is_private,
@@ -826,15 +839,13 @@ fn try_parse_function_definition(state: &PState, offset: usize) -> ParserResult<
 
     let (parameters, offset) = try_parse_parameters(state, offset).unwrap_or((vec![], offset));
 
-    let (is_keyword_form, offset) = try_parse_grammar_name(state, offset, ",")
-        .map(|(_, offset)| (true, offset))
-        .unwrap_or((false, offset));
+    let offset = try_consume(state, offset, comma_parser);
 
-    let ((do_block, _), offset) = try_parse_do(state, offset)?;
+    let (do_block, offset) = try_parse_do(state, offset)?;
 
     let function = Expression::FunctionDef(Function {
         name: function_name,
-        body: Box::new(do_block),
+        body: Box::new(Expression::Do(do_block)),
         guard_expression: None,
         parameters,
         is_private,
@@ -843,10 +854,7 @@ fn try_parse_function_definition(state: &PState, offset: usize) -> ParserResult<
     Ok((function, offset))
 }
 
-fn try_parse_do_keyword(
-    state: &PState,
-    offset: usize,
-) -> ParserResult<(Expression, Option<OptionalBlock>)> {
+fn try_parse_do_keyword(state: &PState, offset: usize) -> ParserResult<Do> {
     let (list, offset) = try_parse_keyword_expressions(state, offset)
         .or_else(|_| try_parse_keyword_list(state, offset))?;
 
@@ -857,11 +865,15 @@ fn try_parse_do_keyword(
             // just expand the support here if more is needed
             let optional_block =
                 keyword_fetch(&list, atom!("else")).map(|else_block| OptionalBlock {
-                    block: else_block,
+                    block: Box::new(else_block),
                     block_type: OptionalBlockType::Else,
                 });
 
-            Ok(((body, optional_block), offset))
+            let do_block = Do {
+                body: Box::new(body),
+                optional_block,
+            };
+            Ok((do_block, offset))
         }
         None => {
             let node = state.tokens.last().unwrap();
@@ -900,11 +912,11 @@ fn try_parse_macro_definition(state: &PState, offset: usize) -> ParserResult<Exp
         let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
         let offset = try_consume(state, offset, comma_parser);
 
-        let ((do_block, _), offset) = try_parse_do(state, offset)?;
+        let (do_block, offset) = try_parse_do(state, offset)?;
 
         let macro_def = Expression::MacroDef(Macro {
             name: macro_name,
-            body: Box::new(do_block),
+            body: Box::new(Expression::Do(do_block)),
             guard_expression: Some(Box::new(guard_expr)),
             parameters,
             is_private,
@@ -914,18 +926,13 @@ fn try_parse_macro_definition(state: &PState, offset: usize) -> ParserResult<Exp
     };
 
     let (macro_name, offset) = try_parse_identifier(state, offset)?;
-
     let (parameters, offset) = try_parse_parameters(state, offset).unwrap_or((vec![], offset));
-
-    let (is_keyword_form, offset) = try_parse_grammar_name(state, offset, ",")
-        .map(|(_, offset)| (true, offset))
-        .unwrap_or((false, offset));
-
-    let ((do_block, _), offset) = try_parse_do(state, offset)?;
+    let offset = try_consume(state, offset, comma_parser);
+    let (do_block, offset) = try_parse_do(state, offset)?;
 
     let macro_def = Expression::MacroDef(Macro {
         name: macro_name,
-        body: Box::new(do_block),
+        body: Box::new(Expression::Do(do_block)),
         guard_expression: None,
         parameters,
         is_private,
@@ -1084,22 +1091,21 @@ fn try_parse_remote_call(state: &PState, offset: usize) -> ParserResult<Expressi
     let (remote_callee, offset) = try_parse_expression(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, ".")?;
     let (local_callee, offset) = try_parse_identifier(state, offset)?;
-    let (mut arguments, offset) = try_parse_call_arguments(state, offset)?;
+    let (arguments, offset) = try_parse_call_arguments(state, offset)?;
 
     let (do_block, offset) = if *state.expecting_do.borrow() {
         try_parse_do(state, offset)
-            .map(|((block, _), offset)| (Some(block), offset))
+            .map(|(block, offset)| (Some(block), offset))
             .unwrap_or((None, offset))
     } else {
         (None, offset)
     };
 
-    arguments.extend(do_block);
-
     let call = Expression::Call(Call {
         target: Box::new(Expression::Identifier(local_callee)),
         remote_callee: Some(Box::new(remote_callee)),
         arguments,
+        do_block,
     });
 
     Ok((call, offset))
@@ -1110,23 +1116,21 @@ fn try_parse_local_call(state: &PState, offset: usize) -> ParserResult<Expressio
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (local_callee, offset) = try_parse_identifier(state, offset)?;
 
-    let (mut arguments, offset) =
-        try_parse_call_arguments(state, offset).unwrap_or((vec![], offset));
+    let (arguments, offset) = try_parse_call_arguments(state, offset).unwrap_or((vec![], offset));
 
     let (do_block, offset) = if *state.expecting_do.borrow() {
         try_parse_do(state, offset)
-            .map(|((block, _), offset)| (Some(block), offset))
+            .map(|(block, offset)| (Some(block), offset))
             .unwrap_or((None, offset))
     } else {
         (None, offset)
     };
 
-    arguments.extend(do_block);
-
     let call = Expression::Call(Call {
         target: Box::new(Expression::Identifier(local_callee)),
         remote_callee: None,
         arguments,
+        do_block,
     });
 
     Ok((call, offset))
@@ -1576,18 +1580,12 @@ fn try_parse_case_arm_guard(
 }
 
 // TODO: make this big boy return an optional do block
-fn try_parse_do(
-    state: &PState,
-    offset: usize,
-) -> ParserResult<(Expression, Option<OptionalBlock>)> {
+fn try_parse_do(state: &PState, offset: usize) -> ParserResult<Do> {
     try_parse_do_block(state, offset).or_else(|_| try_parse_do_keyword(state, offset))
 }
 
 /// Parses a sugarized do block and returns a desugarized keyword structure
-fn try_parse_do_block(
-    state: &PState,
-    offset: usize,
-) -> ParserResult<(Expression, Option<OptionalBlock>)> {
+fn try_parse_do_block(state: &PState, offset: usize) -> ParserResult<Do> {
     let (_, offset) = try_parse_grammar_name(state, offset, "do_block")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "do")?;
 
@@ -1633,16 +1631,15 @@ fn try_parse_do_block(
         .and_then(|(_, offset)| {
             let (block_type, offset) = optional_block_parser(state, offset)?;
 
-            let (block, offset) = parse_until(
+            let (mut block, offset) = parse_until(
                 state,
                 offset,
                 try_parse_expression,
                 optional_block_end_parser,
             )?;
 
-            // TODO: normalize block to single expression if len 1
             let optional_block = OptionalBlock {
-                block: Expression::Block(block),
+                block: Box::new(normalize_block(&mut block)),
                 block_type,
             };
 
@@ -1651,26 +1648,21 @@ fn try_parse_do_block(
         .unwrap_or((None, offset));
 
     let (_, offset) = try_parse_grammar_name(state, offset, "end")?;
+    let body = normalize_block(&mut body);
 
-    // TODO: move to a helper function
-    let body = if body.len() == 1 {
-        body.pop().unwrap()
-    } else {
-        Expression::Block(body)
+    let do_block = Do {
+        body: Box::new(body),
+        optional_block,
     };
+    Ok((do_block, offset))
+}
 
-    // if let Some(mut block) = optional_block {
-    //     let block = if block.len() == 1 {
-    //         block.pop().unwrap()
-    //     } else {
-    //         Expression::Block(block)
-    //     };
-
-    //     let block_atom = optional_block_atom.unwrap();
-    //     base_list.items.push(tuple!(block_atom, block));
-    // }
-
-    Ok(((body, optional_block), offset))
+fn normalize_block(block: &mut Vec<Expression>) -> Expression {
+    if block.len() == 1 {
+        block.pop().unwrap()
+    } else {
+        Expression::Block(block.to_owned())
+    }
 }
 
 fn try_parse_with_do(
@@ -1678,7 +1670,8 @@ fn try_parse_with_do(
     offset: usize,
 ) -> ParserResult<(Expression, Option<Vec<CaseArm>>)> {
     try_parse_with_do_block(state, offset).or_else(|_| {
-        try_parse_do_keyword(state, offset).map(|((body, _), offset)| ((body, None), offset))
+        try_parse_do_keyword(state, offset)
+            .map(|(do_block, offset)| ((*do_block.body, None), offset))
     })
 }
 
@@ -2423,13 +2416,13 @@ fn try_parse_if_expression(state: &PState, offset: usize) -> ParserResult<Expres
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(state, offset)?;
 
-    let ((do_block, optional_block), offset) = try_parse_do(state, offset)?;
+    let (do_block, offset) = try_parse_do(state, offset)?;
     // TODO: helper function for this
-    let else_block = match optional_block {
+    let else_block = match do_block.optional_block {
         Some(OptionalBlock {
             block_type: OptionalBlockType::Else,
             block,
-        }) => Some(Box::new(block)),
+        }) => Some(block),
 
         Some(OptionalBlock {
             block_type: _,
@@ -2444,7 +2437,7 @@ fn try_parse_if_expression(state: &PState, offset: usize) -> ParserResult<Expres
     // TODO: add support back for else
     let if_expr = Expression::If(ConditionalExpression {
         condition_expression: Box::new(condition_expression),
-        do_expression: Box::new(do_block),
+        do_expression: do_block.body,
         else_expression: else_block,
     });
 
@@ -2457,13 +2450,13 @@ fn try_parse_unless_expression(state: &PState, offset: usize) -> ParserResult<Ex
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(state, offset)?;
 
-    let ((do_block, optional_block), offset) = try_parse_do(state, offset)?;
+    let (do_block, offset) = try_parse_do(state, offset)?;
     // TODO: helper function for this
-    let else_block = match optional_block {
+    let else_block = match do_block.optional_block {
         Some(OptionalBlock {
             block_type: OptionalBlockType::Else,
             block,
-        }) => Some(Box::new(block)),
+        }) => Some(block),
 
         Some(OptionalBlock {
             block_type: _,
@@ -2477,7 +2470,7 @@ fn try_parse_unless_expression(state: &PState, offset: usize) -> ParserResult<Ex
 
     let unless_expr = Expression::Unless(ConditionalExpression {
         condition_expression: Box::new(condition_expression),
-        do_expression: Box::new(do_block),
+        do_expression: do_block.body,
         else_expression: else_block,
     });
 
@@ -2852,7 +2845,8 @@ macro_rules! call {
         Expression::Call(Call {
             target: Box::new($target),
             remote_callee: None,
-            arguments: vec![$($arg,)*]
+            arguments: vec![$($arg,)*],
+            do_block: None,
         })
     };
 }
@@ -2864,6 +2858,7 @@ macro_rules! call_no_args {
             target: Box::new($target),
             remote_callee: None,
             arguments: vec![],
+            do_block: None,
         })
     };
 }
@@ -2969,6 +2964,7 @@ mod tests {
             target: Box::new(id!("reject")),
             remote_callee: Some(Box::new(atom!("Enum"))),
             arguments: vec![id!("a"), id!("my_func")],
+            do_block: None,
         })]);
 
         assert_eq!(result, target);
@@ -2983,6 +2979,7 @@ mod tests {
             target: Box::new(id!("encode")),
             remote_callee: Some(Box::new(atom!("base64"))),
             arguments: vec![Expression::String("abc".to_string())],
+            do_block: None,
         })]);
 
         assert_eq!(result, target);
@@ -2997,6 +2994,7 @@ mod tests {
             target: Box::new(id!("parse".to_string())),
             remote_callee: Some(Box::new(id!("json_parser"))),
             arguments: vec![id!("body")],
+            do_block: None,
         })]);
 
         assert_eq!(result, target);
@@ -3044,6 +3042,7 @@ mod tests {
             target: Box::new(id!("inspect")),
             remote_callee: Some(Box::new(atom!("IO"))),
             arguments: vec![list!(tuple!(atom!("label"), atom!("test")))],
+            do_block: None,
         })]);
 
         assert_eq!(result, target);
@@ -3061,6 +3060,7 @@ mod tests {
                 id!("my_struct"),
                 list!(tuple!(atom!("limit"), atom!("infinity"))),
             ],
+            do_block: None,
         })]);
 
         assert_eq!(result, target);
@@ -3085,12 +3085,7 @@ mod tests {
     fn parse_call_no_arguments() {
         let code = "to_integer()";
         let result = parse(&code).unwrap();
-
-        let target = Block(vec![Expression::Call(Call {
-            target: Box::new(id!("to_integer")),
-            remote_callee: None,
-            arguments: vec![],
-        })]);
+        let target = Block(vec![call_no_args!(id!("to_integer"))]);
 
         assert_eq!(result, target);
     }
@@ -3317,11 +3312,7 @@ mod tests {
                     name: "func".to_string(),
                     is_private: false,
                     parameters: vec![],
-                    body: Box::new(Expression::Call(Call {
-                        target: Box::new(id!("priv_func")),
-                        remote_callee: None,
-                        arguments: vec![],
-                    })),
+                    body: Box::new(call_no_args!(id!("priv_func"))),
                     guard_expression: None,
                 }),
                 Expression::FunctionDef(Function {
@@ -3371,11 +3362,7 @@ mod tests {
             name: "func".to_string(),
             is_private: false,
             parameters: vec![],
-            body: Box::new(Expression::Call(Call {
-                target: Box::new(id!("priv_func")),
-                remote_callee: None,
-                arguments: vec![],
-            })),
+            body: Box::new(call_no_args!(id!("priv_func"))),
             guard_expression: None,
         })]);
 
@@ -4144,11 +4131,7 @@ mod tests {
         let target = Block(vec![binary_operation!(
             id!("value"),
             BinaryOperator::Pipe,
-            Expression::Call(Call {
-                target: Box::new(id!("function")),
-                remote_callee: None,
-                arguments: vec![],
-            })
+            call_no_args!(id!("function"))
         )]);
 
         assert_eq!(result, target);
@@ -5353,10 +5336,7 @@ mod tests {
         let target = Block(vec![call!(
             id!("schema"),
             string!("my_schema"),
-            list!(tuple!(
-                atom!("do"),
-                call!(id!("field"), atom!("name"), atom!("string"))
-            ))
+            call!(id!("field"), atom!("name"), atom!("string"))
         )]);
 
         assert_eq!(result, target);
@@ -5376,7 +5356,7 @@ mod tests {
             id!("schema"),
             string!("my_schema"),
             list!(
-                tuple!(atom!("do"), int!(10)),
+                int!(10),
                 tuple!(
                     atom!("rescue"),
                     call!(id!("field"), atom!("name"), atom!("string"))
@@ -5395,10 +5375,7 @@ mod tests {
         end
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![call!(
-            id!("my_op"),
-            list!(tuple!(atom!("do"), int!(10)))
-        )]);
+        let target = Block(vec![call!(id!("my_op"), int!(10))]);
 
         assert_eq!(result, target);
     }
