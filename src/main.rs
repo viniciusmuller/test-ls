@@ -5366,11 +5366,15 @@ mod tests {
         end
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![call!(
-            id!("schema"),
-            string!("my_schema"),
-            call!(id!("field"), atom!("name"), atom!("string"))
-        )]);
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(id!("schema")),
+            remote_callee: None,
+            arguments: vec![string!("my_schema")],
+            do_block: Some(Do {
+                body: Box::new(call!(id!("field"), atom!("name"), atom!("string"))),
+                optional_block: None,
+            }),
+        })]);
 
         assert_eq!(result, target);
     }
@@ -5385,17 +5389,18 @@ mod tests {
         end
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![call!(
-            id!("schema"),
-            string!("my_schema"),
-            list!(
-                int!(10),
-                tuple!(
-                    atom!("rescue"),
-                    call!(id!("field"), atom!("name"), atom!("string"))
-                )
-            )
-        )]);
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(id!("schema")),
+            remote_callee: None,
+            arguments: vec![string!("my_schema")],
+            do_block: Some(Do {
+                body: Box::new(int!(10)),
+                optional_block: Some(OptionalBlock {
+                    block: Box::new(call!(id!("field"), atom!("name"), atom!("string"))),
+                    block_type: OptionalBlockType::Rescue,
+                }),
+            }),
+        })]);
 
         assert_eq!(result, target);
     }
@@ -5408,7 +5413,15 @@ mod tests {
         end
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![call!(id!("my_op"), _do!(int!(10)))]);
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(id!("my_op")),
+            remote_callee: None,
+            arguments: vec![],
+            do_block: Some(Do {
+                body: Box::new(int!(10)),
+                optional_block: None,
+            }),
+        })]);
 
         assert_eq!(result, target);
     }
