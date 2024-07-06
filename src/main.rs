@@ -106,7 +106,7 @@ impl<'a> PState<'a> {
     }
 
     fn parse(&mut self) -> ParserResult<Expression> {
-        parse_all_tokens(self, 0, try_parse_expression)
+        parse_all_tokens(self, 0, Box::new(try_parse_expression))
             .map(|(expressions, offset)| (Expression::Block(expressions), offset))
     }
 
@@ -116,7 +116,7 @@ impl<'a> PState<'a> {
 }
 
 type ParserResult<T> = Result<(T, usize), ParseError>;
-type Parser<'a, T> = fn(&'a PState<'a>, usize) -> ParserResult<T>;
+type Parser<'a, T> = Box<dyn Fn(&'a PState<'a>, usize) -> ParserResult<T>>;
 
 /// Check https://hexdocs.pm/elixir/1.17.1/operators.html for more info
 ///
@@ -717,8 +717,7 @@ fn try_parse_quote_block(state: &PState, offset: usize) -> ParserResult<Expressi
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "quote")?;
 
-    let arguments_p = |state, offset| try_parse_grammar_name(state, offset, "arguments");
-    let offset = try_consume(state, offset, arguments_p);
+    let offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
 
     let (options, offset) = try_parse_keyword_expressions(state, offset)
         .or_else(|_| try_parse_keyword_list(state, offset))
@@ -735,12 +734,23 @@ fn try_parse_quote_block(state: &PState, offset: usize) -> ParserResult<Expressi
     Ok((capture, offset))
 }
 
+fn try_parse_arguments_token<'a>(state: &'a PState, offset: usize) -> ParserResult<Node<'a>> {
+    try_parse_grammar_name(state, offset, "arguments")
+}
+
+fn try_parse_call_token<'a>(state: &'a PState, offset: usize) -> ParserResult<Node<'a>> {
+    try_parse_grammar_name(state, offset, "call")
+}
+
+fn try_parse_end_token<'a>(state: &'a PState, offset: usize) -> ParserResult<Node<'a>> {
+    try_parse_grammar_name(state, offset, "end")
+}
+
 fn try_parse_quote_oneline(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (quote_node, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, "quote")?;
 
-    let arguments_p = |state, offset| try_parse_grammar_name(state, offset, "arguments");
-    let offset = try_consume(state, offset, arguments_p);
+    let offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
 
     let (mut options, offset) = try_parse_keyword_expressions(state, offset)
         .or_else(|_| try_parse_keyword_list(state, offset))
@@ -826,18 +836,18 @@ fn try_parse_function_definition(state: &PState, offset: usize) -> ParserResult<
         (offset, is_private)
     };
 
-    let offset = try_consume(state, offset, |state, offset| {
-        try_parse_grammar_name(state, offset, "arguments")
-    });
+    let offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
 
-    let offset = try_consume(state, offset, |state, offset| {
-        try_parse_grammar_name(state, offset, "call")
-    });
+    let offset = try_consume(
+        state,
+        offset,
+        Box::new(|state, offset| try_parse_grammar_name(state, offset, "call")),
+    );
 
     if let Ok(((guard_expr, parameters, function_name), offset)) =
         try_parse_function_guard(state, offset)
     {
-        let offset = try_consume(state, offset, comma_parser);
+        let offset = try_consume(state, offset, Box::new(comma_parser));
         let (do_block, offset) = try_parse_do(state, offset)?;
 
         let function = Expression::FunctionDef(Function {
@@ -855,7 +865,7 @@ fn try_parse_function_definition(state: &PState, offset: usize) -> ParserResult<
 
     let (parameters, offset) = try_parse_parameters(state, offset).unwrap_or((vec![], offset));
 
-    let offset = try_consume(state, offset, comma_parser);
+    let offset = try_consume(state, offset, Box::new(comma_parser));
 
     let (do_block, offset) = try_parse_do(state, offset)?;
 
@@ -915,20 +925,13 @@ fn try_parse_macro_definition(state: &PState, offset: usize) -> ParserResult<Exp
         (offset, is_private)
     };
 
-    let offset = try_consume(state, offset, |state, offset| {
-        try_parse_grammar_name(state, offset, "arguments")
-    });
-
-    let offset = try_consume(state, offset, |state, offset| {
-        try_parse_grammar_name(state, offset, "call")
-    });
+    let offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
+    let offset = try_consume(state, offset, Box::new(try_parse_call_token));
 
     if let Ok(((guard_expr, parameters, macro_name), offset)) =
         try_parse_function_guard(state, offset)
     {
-        let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
-        let offset = try_consume(state, offset, comma_parser);
-
+        let offset = try_consume(state, offset, Box::new(comma_parser));
         let (do_block, offset) = try_parse_do(state, offset)?;
 
         let macro_def = Expression::MacroDef(Macro {
@@ -944,7 +947,7 @@ fn try_parse_macro_definition(state: &PState, offset: usize) -> ParserResult<Exp
 
     let (macro_name, offset) = try_parse_identifier(state, offset)?;
     let (parameters, offset) = try_parse_parameters(state, offset).unwrap_or((vec![], offset));
-    let offset = try_consume(state, offset, comma_parser);
+    let offset = try_consume(state, offset, Box::new(comma_parser));
     let (do_block, offset) = try_parse_do(state, offset)?;
 
     let macro_def = Expression::MacroDef(Macro {
@@ -987,12 +990,13 @@ fn try_parse_parameters(state: &PState, offset: usize) -> ParserResult<Vec<Param
         Err(_) => (offset, false),
     };
 
-    let sep_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
-    let (parameters, offset) =
-        match try_parse_sep_by(state, offset, try_parse_parameter, sep_parser) {
-            Ok((parameters, offset)) => (parameters, offset),
-            Err(_) => (vec![], offset),
-        };
+    let (parameters, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(try_parse_parameter),
+        Box::new(comma_parser),
+    )
+    .unwrap_or((vec![], offset));
 
     let offset = if has_parenthesis {
         let (_, new_offset) = try_parse_grammar_name(state, offset, ")")?;
@@ -1204,17 +1208,33 @@ fn comma_parser<'a>(state: &'a PState, offset: usize) -> ParserResult<Node<'a>> 
 
 // TODO: use this to parse expressions sep by comma in the function body
 fn parse_expressions_sep_by_comma(state: &PState, offset: usize) -> ParserResult<Vec<Expression>> {
-    try_parse_sep_by(state, offset, try_parse_expression, comma_parser)
+    try_parse_sep_by(
+        state,
+        offset,
+        Box::new(try_parse_expression),
+        Box::new(comma_parser),
+    )
 }
 
 fn parse_typespecs_sep_by_comma(state: &PState, offset: usize) -> ParserResult<Vec<Typespec>> {
-    try_parse_sep_by(state, offset, try_parse_typespec, comma_parser)
+    try_parse_sep_by(
+        state,
+        offset,
+        Box::new(try_parse_typespec),
+        Box::new(comma_parser),
+    )
 }
 
 fn try_parse_keyword_expressions(state: &PState, offset: usize) -> ParserResult<List> {
     let (_, offset) = try_parse_grammar_name(state, offset, "keywords")?;
 
-    try_parse_sep_by(state, offset, try_parse_keyword_pair, comma_parser).map(|(pairs, offset)| {
+    try_parse_sep_by(
+        state,
+        offset,
+        Box::new(try_parse_keyword_pair),
+        Box::new(comma_parser),
+    )
+    .map(|(pairs, offset)| {
         let tuples = pairs
             .into_iter()
             .map(|(key, value)| {
@@ -1239,7 +1259,12 @@ fn try_parse_keyword_typespecs(
     offset: usize,
 ) -> ParserResult<Vec<(Typespec, Typespec)>> {
     let (_, offset) = try_parse_grammar_name(state, offset, "keywords")?;
-    try_parse_sep_by(state, offset, try_parse_keyword_typespec_pair, comma_parser)
+    try_parse_sep_by(
+        state,
+        offset,
+        Box::new(try_parse_keyword_typespec_pair),
+        Box::new(comma_parser),
+    )
 }
 
 fn try_parse_sep_by<'a, T, S>(
@@ -1348,18 +1373,23 @@ fn try_parse_cond_expression(state: &PState, offset: usize) -> ParserResult<Expr
 
     let end_parser = |state, offset| try_parse_grammar_name(state, offset, "end");
 
-    let (arms, offset) =
-        parse_until(state, offset, try_parse_stab, end_parser).map(|(arms, offset)| {
-            let arms = arms
-                .into_iter()
-                .map(|(left, right)| CondArm {
-                    condition: Box::new(left),
-                    body: Box::new(right),
-                })
-                .collect();
+    let (arms, offset) = parse_until(
+        state,
+        offset,
+        Box::new(try_parse_stab),
+        Box::new(end_parser),
+    )
+    .map(|(arms, offset)| {
+        let arms = arms
+            .into_iter()
+            .map(|(left, right)| CondArm {
+                condition: Box::new(left),
+                body: Box::new(right),
+            })
+            .collect();
 
-            (arms, offset)
-        })?;
+        (arms, offset)
+    })?;
     let (_, offset) = end_parser(state, offset)?;
 
     let case = CondExpression { arms };
@@ -1381,10 +1411,15 @@ fn try_parse_with_expression(state: &PState, offset: usize) -> ParserResult<Expr
                     .map(|((left, right), offset)| (WithClause::Binding(left, right), offset))
             })
     };
-    let (arguments, offset) = try_parse_sep_by(state, offset, clause_parser, comma_parser)?;
+    let (arguments, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(clause_parser),
+        Box::new(comma_parser),
+    )?;
     *state.expecting_do.borrow_mut() = true;
 
-    let offset = try_consume(state, offset, comma_parser);
+    let offset = try_consume(state, offset, Box::new(comma_parser));
     let ((do_block, else_block), offset) = try_parse_with_do(state, offset)?;
 
     let with = WithExpression {
@@ -1421,9 +1456,13 @@ fn try_parse_case_expression(state: &PState, offset: usize) -> ParserResult<Expr
     let (_, offset) = try_parse_grammar_name(state, offset, "do_block")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "do")?;
 
-    let end_parser = |state, offset| try_parse_grammar_name(state, offset, "end");
-    let (arms, offset) = parse_until(state, offset, try_parse_case_arm, end_parser)?;
-    let (_, offset) = end_parser(state, offset)?;
+    let (arms, offset) = parse_until(
+        state,
+        offset,
+        Box::new(try_parse_case_arm),
+        Box::new(try_parse_end_token),
+    )?;
+    let (_, offset) = try_parse_end_token(state, offset)?;
 
     let case = CaseExpression {
         target_expression: Box::new(case_expression),
@@ -1441,7 +1480,12 @@ fn try_parse_for_expression(state: &PState, offset: usize) -> ParserResult<Expre
     // TODO: generators may have a guard as well
     // TODO: parse many generators or filters
     let clause_parser = |state, offset| try_parse_specific_binary_operator(state, offset, "<-");
-    let (clauses, offset) = try_parse_sep_by(state, offset, clause_parser, comma_parser)?;
+    let (clauses, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(clause_parser),
+        Box::new(comma_parser),
+    )?;
     let clauses = clauses
         .into_iter()
         .map(|(left, right)| ForGenerator {
@@ -1517,14 +1561,17 @@ fn try_parse_lambda(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "anonymous_function")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "fn")?;
 
-    let end_parser = |state, offset| try_parse_grammar_name(state, offset, "end");
-
     let lambda_clause_parser = |state, offset| {
         try_parse_lambda_simple_clause(state, offset)
             .or_else(|_| try_parse_lambda_guard_clause(state, offset))
     };
 
-    let (clauses, offset) = parse_until(state, offset, lambda_clause_parser, end_parser)?;
+    let (clauses, offset) = parse_until(
+        state,
+        offset,
+        Box::new(lambda_clause_parser),
+        Box::new(try_parse_end_token),
+    )?;
     let (_, offset) = try_parse_grammar_name(state, offset, "end")?;
 
     let lambda = Lambda { clauses };
@@ -1535,9 +1582,12 @@ fn try_parse_lambda(state: &PState, offset: usize) -> ParserResult<Expression> {
 fn try_parse_lambda_simple_clause(state: &PState, offset: usize) -> ParserResult<LambdaClause> {
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
-    let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
-
-    let (arguments, offset) = try_parse_sep_by(state, offset, try_parse_expression, comma_parser)?;
+    let (arguments, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(try_parse_expression),
+        Box::new(comma_parser),
+    )?;
 
     let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
     let (body, offset) = try_parse_stab_body(state, offset)?;
@@ -1557,7 +1607,12 @@ fn try_parse_lambda_guard_clause(state: &PState, offset: usize) -> ParserResult<
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
 
-    let (arguments, offset) = try_parse_sep_by(state, offset, try_parse_expression, comma_parser)?;
+    let (arguments, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(try_parse_expression),
+        Box::new(comma_parser),
+    )?;
 
     let (_, offset) = try_parse_grammar_name(state, offset, "when")?;
     let (guard, offset) = try_parse_expression(state, offset)?;
@@ -1591,7 +1646,12 @@ fn try_parse_stab_body(state: &PState, offset: usize) -> ParserResult<Expression
             .or_else(|_| try_parse_grammar_name(state, offset, "end"))
     };
 
-    let (mut body, offset) = parse_until(state, offset, try_parse_expression, end_parser)?;
+    let (mut body, offset) = parse_until(
+        state,
+        offset,
+        Box::new(try_parse_expression),
+        Box::new(end_parser),
+    )?;
     let body = if body.len() == 1 {
         body.remove(0)
     } else {
@@ -1662,10 +1722,13 @@ fn try_parse_do_block(state: &PState, offset: usize) -> ParserResult<Do> {
             .or_else(|_| try_parse_grammar_name(state, offset, "catch_block"))
     };
 
-    let optional_block_end_parser = |state, offset| try_parse_grammar_name(state, offset, "end");
-
-    let (mut body, offset) = parse_until(state, offset, try_parse_expression, block_end_parser)
-        .unwrap_or((vec![], offset));
+    let (mut body, offset) = parse_until(
+        state,
+        offset,
+        Box::new(try_parse_expression),
+        Box::new(block_end_parser),
+    )
+    .unwrap_or((vec![], offset));
 
     let optional_block_parser = |state, offset| {
         try_parse_grammar_name(state, offset, "else")
@@ -1698,8 +1761,8 @@ fn try_parse_do_block(state: &PState, offset: usize) -> ParserResult<Do> {
             let (mut block, offset) = parse_until(
                 state,
                 offset,
-                try_parse_expression,
-                optional_block_end_parser,
+                Box::new(try_parse_expression),
+                Box::new(try_parse_end_token),
             )?;
 
             let optional_block = OptionalBlock {
@@ -1753,10 +1816,13 @@ fn try_parse_with_do_block(
             .or_else(|_| try_parse_grammar_name(state, offset, "else_block"))
     };
 
-    let optional_block_end_parser = |state, offset| try_parse_grammar_name(state, offset, "end");
-
-    let (mut body, offset) = parse_until(state, offset, try_parse_expression, block_end_parser)
-        .unwrap_or((vec![], offset));
+    let (mut body, offset) = parse_until(
+        state,
+        offset,
+        Box::new(try_parse_expression),
+        Box::new(block_end_parser),
+    )
+    .unwrap_or((vec![], offset));
 
     let optional_block_parser = |state, offset| {
         try_parse_grammar_name(state, offset, "else").map(|(_, offset)| (atom!("else"), offset))
@@ -1769,21 +1835,19 @@ fn try_parse_with_do_block(
         .and_then(|(_, offset)| {
             let (_atom, offset) = optional_block_parser(state, offset)?;
 
-            let (else_block, offset) =
-                parse_until(state, offset, try_parse_case_arm, optional_block_end_parser)?;
+            let (else_block, offset) = parse_until(
+                state,
+                offset,
+                Box::new(try_parse_case_arm),
+                Box::new(try_parse_end_token),
+            )?;
 
             Ok((Some(else_block), offset))
         })
         .unwrap_or((None, offset));
 
     let (_, offset) = try_parse_grammar_name(state, offset, "end")?;
-
-    // TODO: move to a helper function
-    let body = if body.len() == 1 {
-        body.pop().unwrap()
-    } else {
-        Expression::Block(body)
-    };
+    let body = normalize_block(&mut body);
 
     Ok(((body, optional_block), offset))
 }
@@ -1993,8 +2057,13 @@ fn try_parse_typespec_call_arguments(state: &PState, offset: usize) -> ParserRes
         return Ok((vec![], offset));
     };
 
-    let (arguments, offset) = try_parse_sep_by(state, offset, try_parse_typespec, comma_parser)
-        .unwrap_or((vec![], offset));
+    let (arguments, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(try_parse_typespec),
+        Box::new(comma_parser),
+    )
+    .unwrap_or((vec![], offset));
 
     let offset = if has_parenthesis {
         let (_, offset) = try_parse_grammar_name(state, offset, ")")?;
@@ -2012,16 +2081,24 @@ fn try_parse_typespec_map(state: &PState, offset: usize) -> ParserResult<Typespe
     let (_, offset) = try_parse_grammar_name(state, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
 
-    let offset = try_consume(state, offset, |state, offset| {
-        try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
-    });
+    let offset = try_consume(
+        state,
+        offset,
+        Box::new(|state, offset| {
+            try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
+        }),
+    );
 
     let key_value_parser =
         |state, offset| try_parse_specific_binary_operator_typespec(state, offset, "=>");
 
-    let (expression_pairs, offset) =
-        try_parse_sep_by(state, offset, key_value_parser, comma_parser)
-            .unwrap_or_else(|_| (vec![], offset));
+    let (expression_pairs, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(key_value_parser),
+        Box::new(comma_parser),
+    )
+    .unwrap_or_else(|_| (vec![], offset));
 
     // Keyword-notation-only map
     let (keyword_pairs, offset) =
@@ -2038,19 +2115,26 @@ fn try_parse_map(state: &PState, offset: usize) -> ParserResult<Map> {
     let (_, offset) = try_parse_grammar_name(state, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
 
-    let offset = try_consume(state, offset, |state, offset| {
-        try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
-    });
+    let offset = try_consume(
+        state,
+        offset,
+        Box::new(|state, offset| {
+            try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
+        }),
+    );
 
     let (updated, offset) = try_parse_map_update(state, offset)
         .map(|(updated, offset)| (Some(Box::new(updated)), offset))
         .unwrap_or((None, offset));
 
     let key_value_parser = |state, offset| try_parse_specific_binary_operator(state, offset, "=>");
-    let comma_parser = |tokens, offset| try_parse_grammar_name(tokens, offset, ",");
-    let (expression_pairs, offset) =
-        try_parse_sep_by(state, offset, key_value_parser, comma_parser)
-            .unwrap_or_else(|_| (vec![], offset));
+    let (expression_pairs, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(key_value_parser),
+        Box::new(comma_parser),
+    )
+    .unwrap_or_else(|_| (vec![], offset));
 
     // Keyword-notation-only map
     let (keyword_pairs, offset) = try_parse_keyword_expressions(state, offset)
@@ -2074,16 +2158,19 @@ fn try_parse_struct(state: &PState, offset: usize) -> ParserResult<Struct> {
     let (struct_name, offset) = try_parse_module_name(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
 
-    let offset = try_consume(state, offset, |state, offset| {
-        try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
-    });
+    let offset = try_consume(
+        state,
+        offset,
+        Box::new(|state, offset| {
+            try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
+        }),
+    );
 
     // Keyword-notation-only map
     let (keyword_pairs, offset) = try_parse_keyword_expressions(state, offset)
         .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))
         .unwrap_or((vec![], offset));
 
-    // let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
     let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
     let s = Struct {
         name: struct_name,
@@ -2312,7 +2399,7 @@ fn try_parse_quoted_content(state: &PState, offset: usize) -> ParserResult<Strin
             .or_else(|_| try_parse_grammar_name(state, offset, "'"))
     };
 
-    parse_until(state, offset, parser, end_parser)
+    parse_until(state, offset, Box::new(parser), Box::new(end_parser))
         .map(|(strings, offset)| (strings.join(""), offset))
 }
 
@@ -2500,7 +2587,7 @@ fn try_parse_if_expression(state: &PState, offset: usize) -> ParserResult<Expres
     let (_, offset) = try_parse_keyword(state, offset, "if")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(state, offset)?;
-    let offset = try_consume(state, offset, comma_parser);
+    let offset = try_consume(state, offset, Box::new(comma_parser));
 
     let (do_block, offset) = try_parse_do(state, offset)?;
     // TODO: helper function for this
@@ -2535,7 +2622,7 @@ fn try_parse_unless_expression(state: &PState, offset: usize) -> ParserResult<Ex
     let (_, offset) = try_parse_keyword(state, offset, "unless")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(state, offset)?;
-    let offset = try_consume(state, offset, comma_parser);
+    let offset = try_consume(state, offset, Box::new(comma_parser));
 
     let (do_block, offset) = try_parse_do(state, offset)?;
     // TODO: helper function for this
