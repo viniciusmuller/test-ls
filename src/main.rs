@@ -551,7 +551,7 @@ fn walkdir(path: &str) -> (Vec<String>, Vec<String>) {
             let path = entry.path();
             if let Some(extension) = path.extension().and_then(OsStr::to_str) {
                 match extension {
-                    "ex" | "exs" => file_paths.push(path.to_owned()),
+                    "ex" => file_paths.push(path.to_owned()),
                     _ => (),
                 }
             }
@@ -1480,12 +1480,16 @@ fn try_parse_for_expression(state: &PState, offset: usize) -> ParserResult<Expre
     // TODO: generators may have a guard as well
     // TODO: parse many generators or filters
     let clause_parser = |state, offset| try_parse_specific_binary_operator(state, offset, "<-");
+
+    *state.expecting_do.borrow_mut() = false;
     let (clauses, offset) = try_parse_sep_by(
         state,
         offset,
         Box::new(clause_parser),
         Box::new(comma_parser),
     )?;
+    *state.expecting_do.borrow_mut() = true;
+
     let clauses = clauses
         .into_iter()
         .map(|(left, right)| ForGenerator {
@@ -1581,13 +1585,15 @@ fn try_parse_lambda(state: &PState, offset: usize) -> ParserResult<Expression> {
 
 fn try_parse_lambda_simple_clause(state: &PState, offset: usize) -> ParserResult<LambdaClause> {
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
+    let offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
+
     let (arguments, offset) = try_parse_sep_by(
         state,
         offset,
         Box::new(try_parse_expression),
         Box::new(comma_parser),
-    )?;
+    )
+    .unwrap_or((vec![], offset));
 
     let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
     let (body, offset) = try_parse_stab_body(state, offset)?;
@@ -1605,7 +1611,6 @@ fn try_parse_lambda_guard_clause(state: &PState, offset: usize) -> ParserResult<
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
-    let comma_parser = |state, offset| try_parse_grammar_name(state, offset, ",");
 
     let (arguments, offset) = try_parse_sep_by(
         state,
@@ -1652,11 +1657,7 @@ fn try_parse_stab_body(state: &PState, offset: usize) -> ParserResult<Expression
         Box::new(try_parse_expression),
         Box::new(end_parser),
     )?;
-    let body = if body.len() == 1 {
-        body.remove(0)
-    } else {
-        Expression::Block(body)
-    };
+    let body = normalize_block(&mut body);
 
     Ok((body, offset))
 }
@@ -2342,6 +2343,7 @@ fn try_parse_tuple(state: &PState, offset: usize) -> Result<(Tuple, usize), Pars
 fn try_parse_integer(state: &PState, offset: usize) -> Result<(usize, usize), ParseError> {
     let (integer_node, offset) = try_parse_grammar_name(state, offset, "integer")?;
     let integer_text = extract_node_text(&state.code, &integer_node);
+    dbg!(&integer_text);
     let integer_text = integer_text.replace('_', "");
 
     let result = if let Some(stripped) = integer_text.strip_prefix("0b") {
@@ -2351,7 +2353,11 @@ fn try_parse_integer(state: &PState, offset: usize) -> Result<(usize, usize), Pa
     } else if let Some(stripped) = integer_text.strip_prefix("0o") {
         usize::from_str_radix(stripped, 8).unwrap()
     } else {
-        integer_text.parse::<usize>().unwrap()
+        integer_text.parse::<usize>().unwrap_or_else(|err| {
+            // dbg!(err, integer_text);
+            dbg!(integer_node);
+            0
+        })
     };
 
     Ok((result, offset))
@@ -3198,6 +3204,30 @@ mod tests {
         let code = "to_integer a";
         let result = parse(&code).unwrap();
         let target = Block(vec![call!(id!("to_integer"), id!("a"))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_call_lambda_no_args() {
+        let code = "
+        Repo.transaction(fn ->
+          handle_subscription_created(params)
+        end)
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(id!("transaction")),
+            remote_callee: Some(Box::new(atom!("Repo"))),
+            arguments: vec![Expression::Lambda(Lambda {
+                clauses: vec![LambdaClause {
+                    arguments: vec![],
+                    body: call!(id!("handle_subscription_created"), id!("params")),
+                    guard: None,
+                }],
+            })],
+            do_block: None,
+        })]);
 
         assert_eq!(result, target);
     }
@@ -6195,6 +6225,23 @@ mod tests {
             into: None,
         })]);
 
+        assert_eq!(result, target);
+
+        let code = r#"
+        for repo <- repos() do
+            repo
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::For(For {
+            generators: vec![ForGenerator {
+                left: Box::new(id!("repo")),
+                right: Box::new(call_no_args!(id!("repos"))),
+            }],
+            block: Box::new(_do!(id!("repo"))),
+            uniq: None,
+            into: None,
+        })]);
         assert_eq!(result, target);
     }
 
