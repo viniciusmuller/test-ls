@@ -269,6 +269,20 @@ struct WithExpression {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+struct For {
+    generators: Vec<ForGenerator>,
+    block: Box<Expression>,
+    uniq: Option<Box<Expression>>,
+    into: Option<Box<Expression>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct ForGenerator {
+    left: Box<Expression>,
+    right: Box<Expression>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct CondExpression {
     arms: Vec<CondArm>,
 }
@@ -433,6 +447,7 @@ enum Expression {
     Unless(ConditionalExpression),
     Case(CaseExpression),
     With(WithExpression),
+    For(For),
     Cond(CondExpression),
     Access(Access),
     DotAccess(DotAccess),
@@ -873,6 +888,7 @@ fn try_parse_do_keyword(state: &PState, offset: usize) -> ParserResult<Do> {
                 body: Box::new(body),
                 optional_block,
             };
+
             Ok((do_block, offset))
         }
         None => {
@@ -1046,7 +1062,25 @@ fn try_parse_identifier(state: &PState, offset: usize) -> ParserResult<Identifie
     let identifier_name = extract_node_text(&state.code, &token);
 
     if actual == "identifier" {
+        // https://hexdocs.pm/elixir/syntax-reference.html#reserved-words
         let reserved = [
+            "true",
+            "false",
+            "nil",
+            "when",
+            "and",
+            "or",
+            "not",
+            "in",
+            "fn",
+            "do",
+            "end",
+            "catch",
+            "rescue",
+            "after",
+            "else",
+            // TODO: technically not reserved words, but we parse them other ways
+            "...",
             "defp",
             "def",
             "defmodule",
@@ -1054,7 +1088,6 @@ fn try_parse_identifier(state: &PState, offset: usize) -> ParserResult<Identifie
             "use",
             "require",
             "alias",
-            "...",
         ];
         if reserved.contains(&identifier_name.as_str()) {
             return Err(build_unexpected_keyword_error(offset, &token));
@@ -1399,6 +1432,37 @@ fn try_parse_case_expression(state: &PState, offset: usize) -> ParserResult<Expr
     Ok((Expression::Case(case), offset))
 }
 
+fn try_parse_for_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+    let (_, offset) = try_parse_keyword(state, offset, "for")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
+
+    // TODO: generators may have a guard as well
+    // TODO: parse many generators or filters
+    let clause_parser = |state, offset| try_parse_specific_binary_operator(state, offset, "<-");
+    let (clauses, offset) = try_parse_sep_by(state, offset, clause_parser, comma_parser)?;
+    let clauses = clauses
+        .into_iter()
+        .map(|(left, right)| ForGenerator {
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+        .collect::<Vec<_>>();
+
+    // TODO: parse options
+
+    let (do_block, offset) = try_parse_do(state, offset)?;
+
+    let for_expr = For {
+        generators: clauses,
+        block: Box::new(Expression::Do(do_block)),
+        uniq: None,
+        into: None,
+    };
+
+    Ok((Expression::For(for_expr), offset))
+}
+
 fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "sigil")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "~")?;
@@ -1579,7 +1643,6 @@ fn try_parse_case_arm_guard(
     Ok(((left, body, guard_expression), offset))
 }
 
-// TODO: make this big boy return an optional do block
 fn try_parse_do(state: &PState, offset: usize) -> ParserResult<Do> {
     try_parse_do_block(state, offset).or_else(|_| try_parse_do_keyword(state, offset))
 }
@@ -2084,8 +2147,6 @@ fn try_parse_list(state: &PState, offset: usize) -> ParserResult<Expression> {
         .map(|(keyword, offset)| (Some(Expression::List(keyword)), offset))
         .unwrap_or_else(|_| (None, offset));
 
-    // dbg!(&keyword);
-
     let (_, offset) = try_parse_grammar_name(state, offset, "]")?;
     let expressions = expressions
         .into_iter()
@@ -2293,6 +2354,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
         .or_else(|err| try_parse_case_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_cond_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_with_expression(state, offset).map_err(|_| err))
+        .or_else(|err| try_parse_for_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_access_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_lambda(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_sigil(state, offset).map_err(|_| err))
@@ -2415,6 +2477,7 @@ fn try_parse_if_expression(state: &PState, offset: usize) -> ParserResult<Expres
     let (_, offset) = try_parse_keyword(state, offset, "if")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(state, offset)?;
+    let offset = try_consume(state, offset, comma_parser);
 
     let (do_block, offset) = try_parse_do(state, offset)?;
     // TODO: helper function for this
@@ -2449,6 +2512,7 @@ fn try_parse_unless_expression(state: &PState, offset: usize) -> ParserResult<Ex
     let (_, offset) = try_parse_keyword(state, offset, "unless")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (condition_expression, offset) = try_parse_expression(state, offset)?;
+    let offset = try_consume(state, offset, comma_parser);
 
     let (do_block, offset) = try_parse_do(state, offset)?;
     // TODO: helper function for this
@@ -4318,7 +4382,6 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // TODO: parse these in keyword form as well
     #[test]
     fn parse_simple_if_expression() {
         let code = r#"
@@ -4333,6 +4396,12 @@ mod tests {
             else_expression: None,
         })]);
 
+        assert_eq!(result, target);
+
+        let code = r#"
+        if false, do: :ok
+        "#;
+        let result = parse(&code).unwrap();
         assert_eq!(result, target);
     }
 
@@ -4749,6 +4818,12 @@ mod tests {
         })]);
 
         assert_eq!(result, target);
+
+        let code = r#"
+        unless false, do: :ok
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
     }
 
     #[test]
@@ -4767,6 +4842,14 @@ mod tests {
             else_expression: Some(Box::new(atom!("not_ok"))),
         })]);
 
+        assert_eq!(result, target);
+
+        let code = r#"
+        unless false,
+            do: :ok,
+            else: :not_ok
+        "#;
+        let result = parse(&code).unwrap();
         assert_eq!(result, target);
     }
 
@@ -5527,25 +5610,25 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // #[test]
-    // fn parse_simple_call_typespec() {
-    //     let code = r#"
-    //     numberino :: integer()
-    //     "#;
-    //     let result = parse(&code).unwrap();
-    //     let target = Block(vec![named_spec!(
-    //         "numberino",
-    //         Typespec::LocalType("integer".to_string(), vec![])
-    //     )]);
+    #[test]
+    fn parse_simple_call_typespec() {
+        let code = r#"
+        @type numberino :: integer()
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("numberino".to_string(), vec![])),
+            Box::new(Typespec::LocalType("integer".to_string(), vec![])),
+        ))]);
 
-    //     assert_eq!(result, target);
+        assert_eq!(result, target);
 
-    //     let code = r#"
-    //     numberino :: integer
-    //     "#;
-    //     let result = parse(&code).unwrap();
-    //     assert_eq!(result, target);
-    // }
+        let code = r#"
+        @type numberino :: integer
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
 
     #[test]
     fn parse_parameterized_call_typespec() {
@@ -5683,22 +5766,22 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // #[test]
-    // fn parse_typespec_list_keyword() {
-    //     let code = r#"
-    //     type :: [key: integer]
-    //     "#;
-    //     let result = parse(&code).unwrap();
-    //     let target = Block(vec![spec!(Typespec::Binding(
-    //         Box::new(Typespec::LocalType("type".to_string(), vec![])),
-    //         Box::new(spec!(Typespec::List(vec![(
-    //             Typespec::Atom("key".to_string()),
-    //             Typespec::LocalType("integer".to_string(), vec![])
-    //         )])))
-    //     ))]);
+    #[test]
+    fn parse_typespec_list_keyword() {
+        let code = r#"
+        @type type :: [key: integer]
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("type".to_string(), vec![])),
+            Box::new(Typespec::List(vec![Typespec::Tuple(vec![
+                Typespec::Atom("key".to_string()),
+                Typespec::LocalType("integer".to_string(), vec![])
+            ])]))
+        ))]);
 
-    //     assert_eq!(result, target);
-    // }
+        assert_eq!(result, target);
+    }
 
     #[test]
     fn parse_typespec_non_empty_of() {
@@ -5937,6 +6020,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_with_guard() {
+        let code = r#"
+        with {:ok, result} when is_integer(result) <- other_func(a) do
+            :ok
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::With(WithExpression {
+            do_block: Box::new(atom!("ok")),
+            match_clauses: vec![WithClause::Match(
+                tuple!(atom!("ok"), id!("result")),
+                call!(id!("other_func"), id!("a")),
+            )],
+            else_clauses: Some(vec![CaseArm {
+                left: Box::new(tuple!(atom!("error"), id!("reason"))),
+                body: Box::new(id!("reason")),
+                guard_expr: None,
+            }]),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_with_else_guards() {
         let code = r#"
         with {:ok, result} <- other_func(a) do
@@ -5969,21 +6076,50 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_simple_for() {
+        let code = r#"
+        for n <- [1, 2, 3] do
+            n * 2
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::For(For {
+            generators: vec![ForGenerator {
+                left: Box::new(id!("n")),
+                right: Box::new(list!(int!(1), int!(2), int!(3))),
+            }],
+            block: Box::new(_do!(binary_operation!(
+                id!("n"),
+                BinaryOperator::Mult,
+                int!(2)
+            ))),
+            uniq: None,
+            into: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    // TODO: parse reduce for
+    // TODO: parse :uniq option for
+    // TODO: parse :into option for
+    // TODO: parse form with options
+    // TODO: parse nested fors
+    // TODO: parse for with filter
 }
 
 // TODO: support specs with guards for @specs
 // https://hexdocs.pm/elixir/typespecs.html#defining-a-specification
 // @spec function(arg) :: [arg] when arg: var
 
-// TODO: along with typespecs, also parse @spec attributes
-
 // TODO: Target: currently parse lib/plausible_release.ex succesfully
-//
-// TODO: support `for`
 
 // TODO: separate remote from local calls in the Expression enum?
 //
 // TODO: parse bitstrings
 
+// TODO: parse anonymous function call
 // TODO: (fn a -> a + 1 end).(10)
 // think about calls whose callee is not an identifier but rather an expression
