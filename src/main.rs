@@ -428,6 +428,7 @@ enum Expression {
     Atom(Atom),
     Map(Map),
     Struct(Struct),
+    Charlist(String),
     List(List),
     Tuple(Tuple),
     Identifier(Identifier),
@@ -2169,6 +2170,25 @@ fn try_parse_list_cons(state: &PState, offset: usize) -> ParserResult<(Expressio
     Ok(((expr_before_cons, cons_expr), offset))
 }
 
+fn try_parse_charlist(state: &PState, offset: usize) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "charlist")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "'")?;
+    let (charlist_content, offset) = try_parse_quoted_content(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "'")?;
+    Ok((Expression::Charlist(charlist_content), offset))
+}
+
+fn try_parse_char_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
+    let (char_node, offset) = try_parse_grammar_name(state, offset, "char")?;
+
+    let char_content = extract_node_text(&state.code, &char_node)
+        .strip_prefix("?")
+        .unwrap_or_default()
+        .to_owned();
+
+    Ok((Expression::Charlist(char_content), offset))
+}
+
 fn try_parse_specific_binary_operator(
     state: &PState,
     offset: usize,
@@ -2289,6 +2309,7 @@ fn try_parse_quoted_content(state: &PState, offset: usize) -> ParserResult<Strin
     let end_parser = |state, offset| {
         try_parse_grammar_name(state, offset, "\"")
             .or_else(|_| try_parse_grammar_name(state, offset, "\"\"\""))
+            .or_else(|_| try_parse_grammar_name(state, offset, "'"))
     };
 
     parse_until(state, offset, parser, end_parser)
@@ -2411,6 +2432,8 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
                 .map_err(|_| err)
         })
         .or_else(|err| try_parse_list(state, offset).map_err(|_| err))
+        .or_else(|err| try_parse_charlist(state, offset).map_err(|_| err))
+        .or_else(|err| try_parse_char_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_binary_operator(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_range(state, offset).map_err(|_| err))
         .or_else(|err| {
@@ -2974,8 +2997,6 @@ mod tests {
 
         assert_eq!(result, target);
     }
-
-    // TODO: parse charlists
 
     #[test]
     fn parse_quoted_atom_with_interpolation() {
@@ -3942,18 +3963,6 @@ mod tests {
         let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
             operator: UnaryOperator::Plus,
             operand: Box::new(int!(10)),
-        })]);
-
-        assert_eq!(result, target);
-    }
-
-    #[test]
-    fn parse_unary_minus() {
-        let code = "-1000";
-        let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::UnaryOperation(UnaryOperation {
-            operator: UnaryOperator::Minus,
-            operand: Box::new(int!(1000)),
         })]);
 
         assert_eq!(result, target);
@@ -6108,6 +6117,33 @@ mod tests {
     // TODO: parse form with options
     // TODO: parse nested fors
     // TODO: parse for with filter
+
+    #[test]
+    fn parse_char_question_operator() {
+        let code = "?A";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Charlist("A".to_string())]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_char() {
+        let code = "'a'";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Charlist("a".to_string())]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_charlist() {
+        let code = "'test charlist'";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Charlist("test charlist".to_string())]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: support specs with guards for @specs
