@@ -31,6 +31,13 @@ struct Function {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+struct FunctionHead {
+    name: Identifier,
+    is_private: bool,
+    parameters: Vec<Parameter>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct CustomGuard {
     name: Identifier,
     body: Box<Expression>,
@@ -440,6 +447,7 @@ enum Expression {
     Module(Module),
     AttributeDef(Attribute),
     AttributeRef(Identifier),
+    FunctionHead(FunctionHead),
     FunctionDef(Function),
     Defguard(CustomGuard),
     Defguardp(CustomGuard),
@@ -878,6 +886,38 @@ fn try_parse_function_definition(state: &PState, offset: usize) -> ParserResult<
         name: function_name,
         body: Box::new(Expression::Do(do_block)),
         guard_expression: None,
+        parameters,
+        is_private,
+    });
+
+    Ok((function, offset))
+}
+
+fn try_parse_function_head(state: &PState, offset: usize) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+
+    // TODO:: move to another function like parse_public_or_private, many places are using logic
+    // similar to this one
+    let (offset, is_private) = match try_parse_keyword(state, offset, "defp") {
+        Ok((_, offset)) => (offset, true),
+        Err(_) => (offset, false),
+    };
+
+    let (offset, is_private) = if !is_private {
+        let (_, offset) = try_parse_keyword(state, offset, "def")?;
+        (offset, false)
+    } else {
+        (offset, is_private)
+    };
+
+    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+    let (function_name, offset) = try_parse_identifier(state, offset)?;
+
+    let (parameters, offset) = try_parse_parameters(state, offset).unwrap_or((vec![], offset));
+
+    let function = Expression::FunctionHead(FunctionHead {
+        name: function_name,
         parameters,
         is_private,
     });
@@ -2595,6 +2635,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
         .or_else(|err| try_parse_remote_call(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_dot_access(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_function_definition(state, offset).map_err(|_| err))
+        .or_else(|err| try_parse_function_head(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_macro_definition(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_if_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_unless_expression(state, offset).map_err(|_| err))
@@ -5121,7 +5162,7 @@ mod tests {
                     left: Box::new(id!("resp")),
                     body: Box::new(Expression::Block(vec![
                         binary_operation!(id!("a"), BinaryOperator::Match, id!("resp")),
-                        id!("a")
+                        id!("a"),
                     ])),
                     guard_expr: Some(Box::new(call!(id!("is_integer"), id!("resp")))),
                 },
@@ -6808,6 +6849,34 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_function_head() {
+        let code = r#"
+        def my_func(a, b \\ nil, c \\ 10)
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::FunctionHead(FunctionHead {
+            name: "my_func".to_string(),
+            is_private: false,
+            parameters: vec![
+                Parameter {
+                    expression: Box::new(id!("a")),
+                    default: None,
+                },
+                Parameter {
+                    expression: Box::new(id!("b")),
+                    default: Some(Box::new(nil!())),
+                },
+                Parameter {
+                    expression: Box::new(id!("c")),
+                    default: Some(Box::new(int!(10))),
+                },
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: support specs with guards for @specs
@@ -6815,5 +6884,8 @@ mod tests {
 // @spec function(arg) :: [arg] when arg: var
 
 // TODO: separate remote from local calls in the Expression enum?
+//
+// TODO: parse for with more forms and options (do is not necessarily on the end)
+// TODO: for site <- sites, do: {site.id, site.domain}, into: %{}
 //
 // TODO: parse bitstrings
