@@ -298,9 +298,10 @@ struct For {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct ForGenerator {
-    left: Box<Expression>,
-    right: Box<Expression>,
+enum ForGenerator {
+    Generator(Expression, Expression),
+    Match(Expression, Expression),
+    Filter(Expression),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1601,8 +1602,18 @@ fn try_parse_for_expression(state: &PState, offset: usize) -> ParserResult<Expre
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
 
     // TODO: generators may have a guard as well
-    // TODO: parse many generators or filters
-    let clause_parser = |state, offset| try_parse_specific_binary_operator(state, offset, "<-");
+    let clause_parser = |state, offset| {
+        try_parse_specific_binary_operator(state, offset, "<-")
+            .map(|((left, right), offset)| (ForGenerator::Generator(left, right), offset))
+            .or_else(|_| {
+                try_parse_specific_binary_operator(state, offset, "=")
+                    .map(|((left, right), offset)| (ForGenerator::Match(left, right), offset))
+            })
+            .or_else(|_| {
+                try_parse_expression(state, offset)
+                    .map(|(expr, offset)| (ForGenerator::Filter(expr), offset))
+            })
+    };
 
     *state.expecting_do.borrow_mut() = false;
     let (clauses, offset) = try_parse_sep_by(
@@ -1612,14 +1623,6 @@ fn try_parse_for_expression(state: &PState, offset: usize) -> ParserResult<Expre
         Box::new(comma_parser),
     )?;
     *state.expecting_do.borrow_mut() = true;
-
-    let clauses = clauses
-        .into_iter()
-        .map(|(left, right)| ForGenerator {
-            left: Box::new(left),
-            right: Box::new(right),
-        })
-        .collect::<Vec<_>>();
 
     // TODO: parse options
 
@@ -1641,6 +1644,7 @@ fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (name_node, offset) = try_parse_grammar_name(state, offset, "sigil_name")?;
     let sigil_name = extract_node_text(&state.code, &name_node);
 
+    dbg!(&sigil_name, offset);
     let (sigil_content, offset) = try_parse_sigil_content(state, offset)?;
 
     let (modifier, offset) = try_parse_grammar_name(state, offset, "sigil_modifiers")
@@ -1660,7 +1664,7 @@ fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
 }
 
 fn try_parse_sigil_content(state: &PState, offset: usize) -> ParserResult<String> {
-    let sigil_open_delimiters = vec!["/", "|", "\"", "'", "(", " [", "{", "<"];
+    let sigil_open_delimiters = vec!["/", "|", "\"", "'", "(", " [", "{", "<", r#"""""#];
     let (_, offset) = try_parse_either_token(state, offset, &sigil_open_delimiters)?;
 
     let parser = |state, offset| {
@@ -1673,7 +1677,7 @@ fn try_parse_sigil_content(state: &PState, offset: usize) -> ParserResult<String
     };
 
     let end_parser = |state, offset| {
-        let sigil_close_delimiters = vec!["/", "|", "\"", "'", ")", " ]", "}", ">"];
+        let sigil_close_delimiters = vec!["/", "|", "\"", "'", ")", " ]", "}", ">", r#"""""#];
         try_parse_either_token(state, offset, &sigil_close_delimiters)
     };
 
@@ -2113,6 +2117,10 @@ fn try_parse_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
         })
         .or_else(|_| {
             try_parse_atom(state, offset).map(|(atom, offset)| (Typespec::Atom(atom), offset))
+        })
+        .or_else(|_| {
+            try_parse_module_name(state, offset)
+                .map(|(atom, offset)| (Typespec::Atom(atom), offset))
         })
         .or_else(|_| try_parse_named_typespec(state, offset))
         .or_else(|_| try_parse_nil(state, offset).map(|(_, offset)| (Typespec::Nil, offset)))?;
@@ -6002,6 +6010,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_sigil_multiline_delimiter() {
+        let code = r#"
+        ~H"""
+        <html><%= hey there! %></html>
+        """
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Sigil(Sigil {
+            name: "H".to_string(),
+            content: "\n        <html><%= hey there! %></html>\n        ".to_string(),
+            modifier: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_custom_block_expressions() {
         let code = r#"
         schema "my_schema" do
@@ -6092,6 +6117,20 @@ mod tests {
         let target = Block(vec![_type!(Typespec::Binding(
             Box::new(Typespec::LocalType("type".to_string(), vec![])),
             Box::new(Typespec::Atom("api_key".to_string()))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_atom_module_literal_typespec() {
+        let code = r#"
+        @type type :: MyBehaviour
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("type".to_string(), vec![])),
+            Box::new(Typespec::Atom("MyBehaviour".to_string()))
         ))]);
 
         assert_eq!(result, target);
@@ -6647,10 +6686,10 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::For(For {
-            generators: vec![ForGenerator {
-                left: Box::new(id!("n")),
-                right: Box::new(list!(int!(1), int!(2), int!(3))),
-            }],
+            generators: vec![ForGenerator::Generator(
+                id!("n"),
+                list!(int!(1), int!(2), int!(3)),
+            )],
             block: Box::new(_do!(binary_operation!(
                 id!("n"),
                 BinaryOperator::Mult,
@@ -6663,29 +6702,124 @@ mod tests {
         assert_eq!(result, target);
 
         let code = r#"
+        for n <- [1, 2, 3], do: n * 2
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+
+        let code = r#"
         for repo <- repos() do
             repo
         end
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::For(For {
-            generators: vec![ForGenerator {
-                left: Box::new(id!("repo")),
-                right: Box::new(call_no_args!(id!("repos"))),
-            }],
+            generators: vec![ForGenerator::Generator(
+                id!("repo"),
+                call_no_args!(id!("repos")),
+            )],
             block: Box::new(_do!(id!("repo"))),
             uniq: None,
             into: None,
         })]);
+        assert_eq!(result, target);
+
+        let code = r#"
+        for repo <- repos(), do: repo
+        "#;
+        let result = parse(&code).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_for_multiple_generators() {
+        let code = r#"
+        for n <- a, a <- [[1, 2], [3, 4]] do
+            n * 2
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::For(For {
+            generators: vec![
+                ForGenerator::Generator(id!("n"), id!("a")),
+                ForGenerator::Generator(
+                    id!("a"),
+                    list!(list!(int!(1), int!(2)), list!(int!(3), int!(4))),
+                ),
+            ],
+            block: Box::new(_do!(binary_operation!(
+                id!("n"),
+                BinaryOperator::Mult,
+                int!(2)
+            ))),
+            uniq: None,
+            into: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_for_with_filters() {
+        let code = r#"
+        for n <- [1, 2, 3], rem(n, 2) == 0 do
+            n * 2
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::For(For {
+            generators: vec![
+                ForGenerator::Generator(id!("n"), list!(int!(1), int!(2), int!(3))),
+                ForGenerator::Filter(binary_operation!(
+                    call!(id!("rem"), id!("n"), int!(2)),
+                    BinaryOperator::Equal,
+                    int!(0)
+                )),
+            ],
+            block: Box::new(_do!(binary_operation!(
+                id!("n"),
+                BinaryOperator::Mult,
+                int!(2)
+            ))),
+            uniq: None,
+            into: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_for_binding() {
+        let code = r#"
+        for n <- [1, 2, 3], x = n + 1 do
+            n * 2
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::For(For {
+            generators: vec![
+                ForGenerator::Generator(id!("n"), list!(int!(1), int!(2), int!(3))),
+                ForGenerator::Match(
+                    id!("x"),
+                    binary_operation!(id!("n"), BinaryOperator::Plus, int!(1)),
+                ),
+            ],
+            block: Box::new(_do!(binary_operation!(
+                id!("n"),
+                BinaryOperator::Mult,
+                int!(2)
+            ))),
+            uniq: None,
+            into: None,
+        })]);
+
         assert_eq!(result, target);
     }
 
     // TODO: parse reduce for
     // TODO: parse :uniq option for
     // TODO: parse :into option for
-    // TODO: parse form with options
-    // TODO: parse nested fors
-    // TODO: parse for with filter
+    // TODO: parse for with options
 
     #[test]
     fn parse_char_question_operator() {
