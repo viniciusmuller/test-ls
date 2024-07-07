@@ -68,6 +68,14 @@ struct Struct {
     entries: Vec<(Expression, Expression)>,
 }
 
+// TODO: use enum for attributes
+// so we can do like
+// Type(Typespec)
+// Typep(Typespec)
+// Spec(Typespec)
+// Callback(identifier, Typespec)
+// Other(identifier, Typespec)
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Attribute {
     name: Identifier,
@@ -380,18 +388,7 @@ struct Sigil {
 //      | <<_::_*unit>>                 # unit is an integer from 1 to 256
 //      | <<_::size, _::_*unit>>
 
-// #[derive(Debug, PartialEq, Eq, Clone)]
-// enum TypespecLambda {
-//     // (... -> type)
-//     Any(Box<Expression>),
-//     // (-> type)
-//     NoParameters(Box<Expression>),
-//     // (a, b -> type)
-//     Parameters(Vec<Expression>, Box<Expression>),
-// }
-
 /// https://hexdocs.pm/elixir/typespecs.html
-/// TODO: should probably reference Typespec instead of expression here
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum Typespec {
     /// my_type :: integer()
@@ -404,12 +401,12 @@ enum Typespec {
     RemoteType(Atom, Identifier, Vec<Typespec>),
     /// :ok | :error
     Union(Box<Typespec>, Box<Typespec>),
+    /// (integer(), string() -> atom())
+    Lambda(Vec<Typespec>, Box<Typespec>),
     // literals
     Integer(usize),
     Atom(Atom),
     Bool(bool),
-    // TODO: lambda
-    Lambda(Vec<Typespec>, Vec<Typespec>),
     List(Vec<Typespec>),
     // TODO: bitstring
     Nil,
@@ -1938,6 +1935,7 @@ fn try_parse_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
         .or_else(|_| try_parse_typespec_tuple(state, offset))
         .or_else(|_| try_parse_typespec_map(state, offset))
         .or_else(|_| try_parse_typespec_list(state, offset))
+        .or_else(|_| try_parse_typespec_lambda(state, offset))
         .or_else(|_| try_parse_typespec_union(state, offset))
         .or_else(|_| try_parse_wildcard_typespec(state, offset))
         .or_else(|_| {
@@ -2000,6 +1998,25 @@ fn try_parse_typespec_tuple(state: &PState, offset: usize) -> ParserResult<Types
     let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
 
     Ok((Typespec::Tuple(specs), offset))
+}
+
+fn try_parse_typespec_lambda(state: &PState, offset: usize) -> ParserResult<Typespec> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "block")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "(")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
+    let offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
+
+    let (parameters, offset) =
+        parse_typespecs_sep_by_comma(state, offset).unwrap_or_else(|_| (vec![], offset));
+
+    let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "body")?;
+
+    let (return_type, offset) = try_parse_typespec(state, offset)?;
+
+    let (_, offset) = try_parse_grammar_name(state, offset, ")")?;
+
+    Ok((Typespec::Lambda(parameters, Box::new(return_type)), offset))
 }
 
 fn try_parse_typespec_list(state: &PState, offset: usize) -> ParserResult<Typespec> {
@@ -4103,7 +4120,7 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Struct(Struct {
-            entries:  vec![(atom!("host"), string!("host.com"))],
+            entries: vec![(atom!("host"), string!("host.com"))],
             updated: Some(Box::new(id!("existing_map"))),
             name: "URI".to_string(),
         })]);
@@ -6316,17 +6333,71 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_lambda_typespec_no_args() {
+        let code = "
+        @type test :: (-> any())
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("test".to_string(), vec![])),
+            Box::new(Typespec::Lambda(
+                vec![],
+                Box::new(Typespec::LocalType("any".to_string(), vec![]))
+            ))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_lambda_typespec_simple() {
+        let code = "
+        @type test :: (... -> integer())
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("test".to_string(), vec![])),
+            Box::new(Typespec::Lambda(
+                vec![Typespec::Any],
+                Box::new(Typespec::LocalType("integer".to_string(), vec![]))
+            ))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_lambda_typespec_multiple_params() {
+        let code = "
+        @type test :: (integer(), string() -> atom())
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("test".to_string(), vec![])),
+            Box::new(Typespec::Lambda(
+                vec![
+                    Typespec::LocalType("integer".to_string(), vec![]),
+                    Typespec::LocalType("string".to_string(), vec![])
+                ],
+                Box::new(Typespec::LocalType("atom".to_string(), vec![]))
+            ))
+        ))]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: support specs with guards for @specs
 // https://hexdocs.pm/elixir/typespecs.html#defining-a-specification
 // @spec function(arg) :: [arg] when arg: var
 
-// TODO: Target: currently parse lib/plausible_release.ex succesfully
-
 // TODO: separate remote from local calls in the Expression enum?
 //
 // TODO: parse bitstrings
+
+// TODO: parse certain attributes that take typespecs such as @callback
 
 // TODO: parse anonymous function call
 // TODO: (fn a -> a + 1 end).(10)
