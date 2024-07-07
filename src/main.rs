@@ -68,18 +68,15 @@ struct Struct {
     entries: Vec<(Expression, Expression)>,
 }
 
-// TODO: use enum for attributes
-// so we can do like
-// Type(Typespec)
-// Typep(Typespec)
-// Spec(Typespec)
-// Callback(identifier, Typespec)
-// Other(identifier, Typespec)
-
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Attribute {
-    name: Identifier,
-    value: Box<Expression>,
+enum Attribute {
+    Type(Typespec),
+    Opaque(Typespec),
+    Typep(Typespec),
+    Spec(Typespec),
+    Callback(Typespec),
+    Macrocallback(Typespec),
+    Custom(Identifier, Box<Expression>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -455,8 +452,6 @@ enum Expression {
     Lambda(Lambda),
     Grouping(Box<Expression>),
     Sigil(Sigil),
-    Typedef(Typespec),
-    Spec(Typespec),
     Quote(Quote),
     MacroDef(Macro),
     Call(Call),
@@ -1905,10 +1900,24 @@ fn try_parse_type_attribute(state: &PState, offset: usize) -> ParserResult<Expre
     let (_, offset) = try_parse_grammar_name(state, offset, "unary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "@")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
-    let (_, offset) = try_parse_keyword(state, offset, "type")?;
+    let (node, offset) = try_parse_grammar_name(state, offset, "identifier")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (spec, offset) = try_parse_typespec(state, offset)?;
-    Ok((Expression::Typedef(spec), offset))
+
+    let attribute_name = extract_node_text(&state.code, &node);
+    let attribute = match attribute_name.as_str() {
+        "type" => Attribute::Type(spec),
+        "typep" => Attribute::Typep(spec),
+        "opaque" => Attribute::Opaque(spec),
+        "callback" => Attribute::Callback(spec),
+        "macrocallback" => Attribute::Macrocallback(spec),
+        _ => {
+            let node = state.tokens.last().unwrap();
+            return Err(build_unexpected_token_error(offset, node));
+        }
+    };
+
+    Ok((Expression::AttributeDef(attribute), offset))
 }
 
 fn try_parse_spec_attribute(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -1918,7 +1927,7 @@ fn try_parse_spec_attribute(state: &PState, offset: usize) -> ParserResult<Expre
     let (_, offset) = try_parse_keyword(state, offset, "spec")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
     let (spec, offset) = try_parse_typespec(state, offset)?;
-    Ok((Expression::Spec(spec), offset))
+    Ok((Expression::AttributeDef(Attribute::Spec(spec)), offset))
 }
 
 fn try_parse_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
@@ -2352,13 +2361,7 @@ fn try_parse_attribute_definition(state: &PState, offset: usize) -> ParserResult
         .map(|(list, offset)| (Expression::List(list), offset))
         .or_else(|_| try_parse_expression(state, offset))?;
 
-    Ok((
-        Attribute {
-            name: attribute_name,
-            value: Box::new(value),
-        },
-        offset,
-    ))
+    Ok((Attribute::Custom(attribute_name, Box::new(value)), offset))
 }
 
 fn try_parse_attribute_reference(state: &PState, offset: usize) -> ParserResult<Identifier> {
@@ -3095,13 +3098,42 @@ macro_rules! call_no_args {
 #[macro_export]
 macro_rules! _type {
     ( $body:expr ) => {
-        Expression::Typedef($body)
+        Expression::AttributeDef(Attribute::Type($body))
     };
 }
 
+#[macro_export]
+macro_rules! typep {
+    ( $body:expr ) => {
+        Expression::AttributeDef(Attribute::Typep($body))
+    };
+}
+
+#[macro_export]
+macro_rules! opaque {
+    ( $body:expr ) => {
+        Expression::AttributeDef(Attribute::Opaque($body))
+    };
+}
+
+#[macro_export]
+macro_rules! callback {
+    ( $body:expr ) => {
+        Expression::AttributeDef(Attribute::Callback($body))
+    };
+}
+
+#[macro_export]
+macro_rules! macrocallback {
+    ( $body:expr ) => {
+        Expression::AttributeDef(Attribute::Macrocallback($body))
+    };
+}
+
+#[macro_export]
 macro_rules! spec {
     ( $body:expr ) => {
-        Expression::Spec($body)
+        Expression::AttributeDef(Attribute::Spec($body))
     };
 }
 
@@ -4011,14 +4043,16 @@ mod tests {
         assert_eq!(result, target);
     }
 
+    // TODO: test typespec specific attributes
+
     #[test]
     fn parse_attribute() {
         let code = "@timeout 5_000";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::AttributeDef(Attribute {
-            name: "timeout".to_string(),
-            value: Box::new(int!(5000)),
-        })]);
+        let target = Block(vec![Expression::AttributeDef(Attribute::Custom(
+            "timeout".to_string(),
+            Box::new(int!(5000)),
+        ))]);
 
         assert_eq!(result, target);
     }
@@ -4029,13 +4063,13 @@ mod tests {
         @compile inline: [now: 0]
         ";
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::AttributeDef(Attribute {
-            name: "compile".to_string(),
-            value: Box::new(list!(tuple!(
+        let target = Block(vec![Expression::AttributeDef(Attribute::Custom(
+            "compile".to_string(),
+            Box::new(list!(tuple!(
                 atom!("inline"),
                 list!(tuple!(atom!("now"), int!(0)))
             ))),
-        })]);
+        ))]);
 
         // TODO: this is returning nested lists, we should update the parser state to only return
         // the keyword tuple if inside another list
@@ -4062,18 +4096,18 @@ mod tests {
         let target = Block(vec![Expression::Module(Module {
             name: "MyModule".to_string(),
             body: Box::new(_do!(Expression::Block(vec![
-                Expression::AttributeDef(Attribute {
-                    name: "moduledoc".to_string(),
-                    value: Box::new(Expression::String(
+                Expression::AttributeDef(Attribute::Custom(
+                    "moduledoc".to_string(),
+                    Box::new(Expression::String(
                         "\n            This is a nice module!\n            ".to_string(),
-                    )),
-                }),
-                Expression::AttributeDef(Attribute {
-                    name: "doc".to_string(),
-                    value: Box::new(Expression::String(
+                    ))
+                )),
+                Expression::AttributeDef(Attribute::Custom(
+                    "doc".to_string(),
+                    Box::new(Expression::String(
                         "\n            This is a nice function!\n            ".to_string(),
-                    )),
-                }),
+                    ))
+                )),
                 Expression::FunctionDef(Function {
                     name: "func".to_string(),
                     is_private: false,
@@ -6330,6 +6364,72 @@ mod tests {
         let code = "'test charlist'";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Charlist("test charlist".to_string())]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typep_attribute() {
+        let code = "
+        @typep private :: integer()
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![typep!(Typespec::Binding(
+            Box::new(Typespec::LocalType("private".to_string(), vec![])),
+            Box::new(Typespec::LocalType("integer".to_string(), vec![]))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_opaque_attribute() {
+        let code = "
+        @opaque opaque :: atom()
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![opaque!(Typespec::Binding(
+            Box::new(Typespec::LocalType("opaque".to_string(), vec![])),
+            Box::new(Typespec::LocalType("atom".to_string(), vec![]))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_callback_attribute() {
+        let code = "
+        @callback extensions() :: [String.t]
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![callback!(Typespec::Binding(
+            Box::new(Typespec::LocalType("extensions".to_string(), vec![])),
+            Box::new(Typespec::List(vec![Typespec::RemoteType(
+                "String".to_string(),
+                "t".to_string(),
+                vec![]
+            )]))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_macrocallback_attribute() {
+        let code = "
+        @macrocallback generate(a) :: list(tuple())
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![macrocallback!(Typespec::Binding(
+            Box::new(Typespec::LocalType(
+                "generate".to_string(),
+                vec![Typespec::LocalType("a".to_string(), vec![])]
+            )),
+            Box::new(Typespec::LocalType(
+                "list".to_string(),
+                vec![Typespec::LocalType("tuple".to_string(), vec![])]
+            ))
+        ))]);
 
         assert_eq!(result, target);
     }
