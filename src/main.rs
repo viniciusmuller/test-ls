@@ -1642,12 +1642,10 @@ fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
     let sigil_name = extract_node_text(&state.code, &name_node);
 
     let (sigil_content, offset) = try_parse_sigil_content(state, offset)?;
-    dbg!(offset);
 
     let (modifier, offset) = try_parse_grammar_name(state, offset, "sigil_modifiers")
         .map(|(node, offset)| {
             let modifier = extract_node_text(&state.code, &node);
-            dbg!(&modifier);
             (Some(modifier), offset)
         })
         .unwrap_or((None, offset));
@@ -1657,8 +1655,6 @@ fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
         content: sigil_content,
         modifier,
     };
-
-    dbg!(&sigil, offset);
 
     Ok((Expression::Sigil(sigil), offset))
 }
