@@ -64,6 +64,7 @@ struct Map {
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Struct {
     name: Atom,
+    updated: Option<Box<Expression>>,
     entries: Vec<(Expression, Expression)>,
 }
 
@@ -2162,10 +2163,29 @@ fn try_parse_struct(state: &PState, offset: usize) -> ParserResult<Struct> {
     let offset = try_consume(
         state,
         offset,
+        Box::new(|state, offset| try_parse_grammar_name(state, offset, "map_content")),
+    );
+
+    let offset = try_consume(
+        state,
+        offset,
         Box::new(|state, offset| {
             try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
         }),
     );
+
+    let (updated, offset) = try_parse_map_update(state, offset)
+        .map(|(updated, offset)| (Some(Box::new(updated)), offset))
+        .unwrap_or((None, offset));
+
+    let key_value_parser = |state, offset| try_parse_specific_binary_operator(state, offset, "=>");
+    let (expression_pairs, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(key_value_parser),
+        Box::new(comma_parser),
+    )
+    .unwrap_or_else(|_| (vec![], offset));
 
     // Keyword-notation-only map
     let (keyword_pairs, offset) = try_parse_keyword_expressions(state, offset)
@@ -2173,10 +2193,14 @@ fn try_parse_struct(state: &PState, offset: usize) -> ParserResult<Struct> {
         .unwrap_or((vec![], offset));
 
     let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
+
+    let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
     let s = Struct {
+        updated,
         name: struct_name,
-        entries: keyword_pairs,
+        entries: pairs,
     };
+
     Ok((s, offset))
 }
 
@@ -2343,7 +2367,6 @@ fn try_parse_tuple(state: &PState, offset: usize) -> Result<(Tuple, usize), Pars
 fn try_parse_integer(state: &PState, offset: usize) -> Result<(usize, usize), ParseError> {
     let (integer_node, offset) = try_parse_grammar_name(state, offset, "integer")?;
     let integer_text = extract_node_text(&state.code, &integer_node);
-    dbg!(&integer_text);
     let integer_text = integer_text.replace('_', "");
 
     let result = if let Some(stripped) = integer_text.strip_prefix("0b") {
@@ -2354,8 +2377,7 @@ fn try_parse_integer(state: &PState, offset: usize) -> Result<(usize, usize), Pa
         usize::from_str_radix(stripped, 8).unwrap()
     } else {
         integer_text.parse::<usize>().unwrap_or_else(|err| {
-            // dbg!(err, integer_text);
-            dbg!(integer_node);
+            dbg!(err, integer_text);
             0
         })
     };
@@ -4068,6 +4090,22 @@ mod tests {
                 (atom!("name"), Expression::String("john".to_string())),
                 (atom!("age"), int!(25)),
             ],
+            updated: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_struct_update_syntax() {
+        let code = r#"
+        %URI{existing_map | host: "host.com"}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Struct(Struct {
+            entries:  vec![(atom!("host"), string!("host.com"))],
+            updated: Some(Box::new(id!("existing_map"))),
+            name: "URI".to_string(),
         })]);
 
         assert_eq!(result, target);
