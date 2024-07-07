@@ -1179,7 +1179,16 @@ fn try_parse_remote_call(state: &PState, offset: usize) -> ParserResult<Expressi
     let (_, offset) = try_parse_grammar_name(state, offset, "dot")?;
     let (remote_callee, offset) = try_parse_expression(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, ".")?;
-    let (local_callee, offset) = try_parse_identifier(state, offset)?;
+
+    let (local_callee, offset) = try_parse_identifier(state, offset).or_else(|_| {
+        // child is the operator node
+        let (_, offset) = try_parse_grammar_name(state, offset, "operator_identifier")?;
+        let operator_node = state.tokens[offset];
+        let operator_text = extract_node_text(&state.code, &operator_node);
+        // manually increase offset for the operator text node we just extracted
+        Ok((operator_text, offset + 1))
+    })?;
+
     let (arguments, offset) = try_parse_call_arguments(state, offset)?;
 
     let (do_block, offset) = if *state.expecting_do.borrow() {
@@ -1499,8 +1508,6 @@ fn try_parse_with_expression(state: &PState, offset: usize) -> ParserResult<Expr
         Box::new(comma_parser),
     )?;
     *state.expecting_do.borrow_mut() = true;
-
-    dbg!(&arguments);
 
     let offset = try_consume(state, offset, Box::new(comma_parser));
     let ((do_block, else_block), offset) = try_parse_with_do(state, offset)?;
@@ -3491,6 +3498,21 @@ mod tests {
             target: Box::new(id!("parse".to_string())),
             remote_callee: Some(Box::new(id!("json_parser"))),
             arguments: vec![id!("body")],
+            do_block: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_remote_call_operator() {
+        let code = "Kernel.++(list)";
+        let result = parse(&code).unwrap();
+
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(id!("++".to_string())),
+            remote_callee: Some(Box::new(atom!("Kernel"))),
+            arguments: vec![id!("list")],
             do_block: None,
         })]);
 
