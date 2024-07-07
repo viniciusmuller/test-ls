@@ -20,12 +20,20 @@ struct Parameter {
     default: Option<Box<Expression>>,
 }
 
+// TODO: move is_private field to Defp variation of the expression enum
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Function {
     name: Identifier,
     is_private: bool,
     body: Box<Expression>,
     guard_expression: Option<Box<Expression>>,
+    parameters: Vec<Parameter>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct CustomGuard {
+    name: Identifier,
+    body: Box<Expression>,
     parameters: Vec<Parameter>,
 }
 
@@ -433,6 +441,8 @@ enum Expression {
     AttributeDef(Attribute),
     AttributeRef(Identifier),
     FunctionDef(Function),
+    Defguard(CustomGuard),
+    Defguardp(CustomGuard),
     BinaryOperation(BinaryOperation),
     UnaryOperation(UnaryOperation),
     Range(Range),
@@ -1177,19 +1187,14 @@ fn try_parse_anonymous_call(state: &PState, offset: usize) -> ParserResult<Expre
 
     let (arguments, offset) = try_parse_call_arguments(state, offset).unwrap_or((vec![], offset));
 
-    let (do_block, offset) = if *state.expecting_do.borrow() {
-        try_parse_do(state, offset)
-            .map(|(block, offset)| (Some(block), offset))
-            .unwrap_or((None, offset))
-    } else {
-        (None, offset)
-    };
-
     let call = Expression::AnonymousCall(Call {
         target: Box::new(local_callee),
         remote_callee: None,
         arguments,
-        do_block,
+        // NOTE: Apparently elixir-tree-sitter parser itself does not support passing do blocks in
+        // anonymous calls, even though it's valid for the elixir compiler.
+        // As it's a super obscure and rare thing, let's not handle it now.
+        do_block: None,
     });
 
     Ok((call, offset))
@@ -2583,6 +2588,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
         .or_else(|err| try_parse_unless_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_case_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_cond_expression(state, offset).map_err(|_| err))
+        .or_else(|err| try_parse_defguard(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_with_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_for_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_access_expression(state, offset).map_err(|_| err))
@@ -2703,6 +2709,47 @@ fn try_parse_binary_operator(state: &PState, offset: usize) -> ParserResult<Expr
         right: Box::new(right),
     });
     Ok((operation, offset))
+}
+
+fn try_parse_defguard(state: &PState, offset: usize) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+
+    let (offset, is_private) = try_parse_keyword(state, offset, "defguardp")
+        .map(|(_, offset)| (offset, true))
+        .unwrap_or((offset, false));
+
+    let (offset, is_private) = if !is_private {
+        let (_, offset) = try_parse_keyword(state, offset, "defguard")?;
+        (offset, false)
+    } else {
+        (offset, is_private)
+    };
+
+    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+    let (guard_name, offset) = try_parse_identifier(state, offset)?;
+
+    let (parameters, offset) = try_parse_parameters(state, offset).unwrap_or((vec![], offset));
+
+    let (_, offset) = try_parse_grammar_name(state, offset, "when")?;
+    let (guard_body, offset) = try_parse_expression(state, offset)?;
+
+    let guard = CustomGuard {
+        name: guard_name,
+        body: Box::new(guard_body),
+        parameters,
+    };
+
+    dbg!(&guard);
+
+    let guard_expr = if is_private {
+        Expression::Defguardp(guard)
+    } else {
+        Expression::Defguard(guard)
+    };
+
+    Ok((guard_expr, offset))
 }
 
 fn try_parse_if_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -6649,22 +6696,6 @@ mod tests {
         assert_eq!(result, target);
     }
 
-    // #[test]
-    // fn parse_lambda_do_block_call() {
-    //     let code = "
-    //     func.()
-    //     ";
-    //     let result = parse(&code).unwrap();
-    //     let target = Block(vec![Expression::AnonymousCall(Call {
-    //         target: Box::new(id!("func")),
-    //         remote_callee: None,
-    //         arguments: vec![],
-    //         do_block: None,
-    //     })]);
-
-    //     assert_eq!(result, target);
-    // }
-
     #[test]
     fn parse_lambda_expression_call() {
         let code = "
@@ -6682,6 +6713,54 @@ mod tests {
             remote_callee: None,
             arguments: vec![int!(10)],
             do_block: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_defguard() {
+        let code = "
+        defguard is_redirect(status) when is_integer(status) and status >= 300 and status < 400
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Defguard(CustomGuard {
+            name: "is_redirect".to_string(),
+            body: Box::new(binary_operation!(
+                binary_operation!(
+                    call!(id!("is_integer"), id!("status")),
+                    BinaryOperator::StrictAnd,
+                    binary_operation!(id!("status"), BinaryOperator::GreaterThanOrEqual, int!(300))
+                ),
+                BinaryOperator::StrictAnd,
+                binary_operation!(id!("status"), BinaryOperator::LessThan, int!(400))
+            )),
+            parameters: vec![Parameter {
+                expression: Box::new(id!("status")),
+                default: None,
+            }],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_defguardp() {
+        let code = "
+        defguardp is_ten(value) when value == 10
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Defguardp(CustomGuard {
+            name: "is_ten".to_string(),
+            body: Box::new(binary_operation!(
+                id!("value"),
+                BinaryOperator::Equal,
+                int!(10)
+            )),
+            parameters: vec![Parameter {
+                expression: Box::new(id!("value")),
+                default: None,
+            }],
         })]);
 
         assert_eq!(result, target);
