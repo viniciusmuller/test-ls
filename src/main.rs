@@ -1643,8 +1643,6 @@ fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "~")?;
     let (name_node, offset) = try_parse_grammar_name(state, offset, "sigil_name")?;
     let sigil_name = extract_node_text(&state.code, &name_node);
-
-    dbg!(&sigil_name, offset);
     let (sigil_content, offset) = try_parse_sigil_content(state, offset)?;
 
     let (modifier, offset) = try_parse_grammar_name(state, offset, "sigil_modifiers")
