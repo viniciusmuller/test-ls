@@ -343,29 +343,25 @@ struct DotAccess {
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Alias {
     target: Vec<Atom>,
-    // TODO: maybe make empty list by default instead of None
-    options: Option<List>,
+    options: Option<Box<Expression>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Require {
     target: Vec<Atom>,
-    // TODO: maybe make empty list by default instead of None
-    options: Option<List>,
+    options: Option<Box<Expression>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Use {
     target: Vec<Atom>,
-    // TODO: maybe make empty list by default instead of None
     options: Option<Box<Expression>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Import {
     target: Vec<Atom>,
-    // TODO: maybe make empty list by default instead of None
-    options: Option<List>,
+    options: Option<Box<Expression>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1645,22 +1641,14 @@ fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (name_node, offset) = try_parse_grammar_name(state, offset, "sigil_name")?;
     let sigil_name = extract_node_text(&state.code, &name_node);
 
-    let sigil_open_delimiters = vec!["/", "|", "\"", "'", "(", " [", "{", "<"];
-    let sigil_close_delimiters = vec!["/", "|", "\"", "'", ")", " ]", "}", ">"];
-
-    let (_, offset) = try_parse_either_token(state, offset, &sigil_open_delimiters)?;
-
-    // TODO: update parse_quoted_content to receive a custom list of end delimiters
-    // and use if here, so we can support sigil with multiple blocks inside it (escape_sequence, quoted_content, etc)
-    let (sigil_content_node, offset) = try_parse_grammar_name(state, offset, "quoted_content")?;
-    let sigil_content = extract_node_text(&state.code, &sigil_content_node);
-
-    let (_, offset) = try_parse_either_token(state, offset, &sigil_close_delimiters)?;
+    let (sigil_content, offset) = try_parse_sigil_content(state, offset)?;
+    dbg!(offset);
 
     let (modifier, offset) = try_parse_grammar_name(state, offset, "sigil_modifiers")
         .map(|(node, offset)| {
-            let sigil_content = extract_node_text(&state.code, &node);
-            (Some(sigil_content), offset)
+            let modifier = extract_node_text(&state.code, &node);
+            dbg!(&modifier);
+            (Some(modifier), offset)
         })
         .unwrap_or((None, offset));
 
@@ -1670,10 +1658,36 @@ fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
         modifier,
     };
 
+    dbg!(&sigil, offset);
+
     Ok((Expression::Sigil(sigil), offset))
 }
 
-// TODO: use in more places
+fn try_parse_sigil_content(state: &PState, offset: usize) -> ParserResult<String> {
+    let sigil_open_delimiters = vec!["/", "|", "\"", "'", "(", " [", "{", "<"];
+    let (_, offset) = try_parse_either_token(state, offset, &sigil_open_delimiters)?;
+
+    let parser = |state, offset| {
+        let (string_node, offset) = try_parse_grammar_name(state, offset, "quoted_content")
+            .or_else(|_| try_parse_grammar_name(state, offset, "escape_sequence"))
+            .or_else(|_| try_parse_interpolation(state, offset))?;
+
+        let string_text = extract_node_text(&state.code, &string_node);
+        Ok((string_text, offset))
+    };
+
+    let end_parser = |state, offset| {
+        let sigil_close_delimiters = vec!["/", "|", "\"", "'", ")", " ]", "}", ">"];
+        try_parse_either_token(state, offset, &sigil_close_delimiters)
+    };
+
+    let (result, offset) = parse_until(state, offset, Box::new(parser), Box::new(end_parser))
+        .map(|(strings, offset)| (strings.join(""), offset))?;
+
+    let (_, offset) = end_parser(state, offset)?;
+    Ok((result, offset))
+}
+
 fn try_parse_either_token<'a>(
     state: &'a PState,
     offset: usize,
@@ -2968,21 +2982,11 @@ fn try_parse_alias(state: &PState, offset: usize) -> ParserResult<Expression> {
 }
 
 fn try_parse_use(state: &PState, offset: usize) -> ParserResult<Expression> {
-    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
-    let (_, offset) = try_parse_keyword(state, offset, "use")?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
-    let (target_module, offset) = try_parse_module_operator_name(state, offset)?;
-
-    let (args, offset) = if let Ok((_, offset)) = try_parse_grammar_name(state, offset, ",") {
-        let (args, offset) = try_parse_expression(state, offset)?;
-        (Some(Box::new(args)), offset)
-    } else {
-        (None, offset)
-    };
+    let ((aliased_module, options), offset) = try_parse_module_operator(state, offset, "use")?;
 
     let use_expr = Use {
-        target: target_module,
-        options: args,
+        target: aliased_module,
+        options,
     };
 
     Ok((Expression::Use(use_expr), offset))
@@ -3019,7 +3023,7 @@ fn try_parse_module_operator(
     state: &PState,
     offset: usize,
     target: &str,
-) -> ParserResult<(Vec<Atom>, Option<List>)> {
+) -> ParserResult<(Vec<Atom>, Option<Box<Expression>>)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_keyword(state, offset, target)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
@@ -3027,7 +3031,13 @@ fn try_parse_module_operator(
 
     let (options, offset) = match try_parse_grammar_name(state, offset, ",") {
         Ok((_, offset)) => {
-            let (options, offset) = try_parse_keyword_expressions(state, offset)?;
+            let (options, offset) = try_parse_keyword_expressions(state, offset)
+                .map(|(list, offset)| (Box::new(Expression::List(list)), offset))
+                .or_else(|_| {
+                    try_parse_expression(state, offset)
+                        .map(|(expr, offset)| (Box::new(expr), offset))
+                })?;
+
             (Some(options), offset)
         }
         Err(_) => (None, offset),
@@ -4981,10 +4991,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Require(Require {
             target: vec!["Logger".to_string()],
-            options: Some(List {
-                items: vec![tuple!(atom!("level"), atom!("info"))],
-                cons: None,
-            }),
+            options: Some(Box::new(list!(tuple!(atom!("level"), atom!("info"))))),
         })]);
 
         assert_eq!(result, target);
@@ -5030,10 +5037,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Alias(Alias {
             target: vec!["MyKeyword".to_string()],
-            options: Some(List {
-                items: vec![tuple!(atom!("as"), atom!("Keyword"))],
-                cons: None,
-            }),
+            options: Some(Box::new(list!(tuple!(atom!("as"), atom!("Keyword"))))),
         })]);
 
         assert_eq!(result, target);
@@ -5131,10 +5135,10 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Import(Import {
             target: vec!["String".to_string()],
-            options: Some(List {
-                items: vec![tuple!(atom!("only"), list!(atom!("split")))],
-                cons: None,
-            }),
+            options: Some(Box::new(list!(tuple!(
+                atom!("only"),
+                list!(atom!("split"))
+            )))),
         })]);
 
         assert_eq!(result, target);
@@ -5977,8 +5981,8 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Sigil(Sigil {
-            name: "HTML".to_string(),
-            content: "with #{regex}^".to_string(),
+            name: "r".to_string(),
+            content: r#"^\/.*"#.to_string(),
             modifier: None,
         })]);
 
