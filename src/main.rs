@@ -411,6 +411,7 @@ enum Typespec {
     // TODO: range
     Tuple(Vec<Typespec>),
     Map(Vec<(Typespec, Typespec)>),
+    Struct(Identifier, Vec<(Typespec, Typespec)>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1943,6 +1944,7 @@ fn try_parse_typespec(state: &PState, offset: usize) -> ParserResult<Typespec> {
         .or_else(|_| try_parse_typespec_grouping(state, offset))
         .or_else(|_| try_parse_typespec_tuple(state, offset))
         .or_else(|_| try_parse_typespec_map(state, offset))
+        .or_else(|_| try_parse_typespec_struct(state, offset))
         .or_else(|_| try_parse_typespec_list(state, offset))
         .or_else(|_| try_parse_typespec_lambda(state, offset))
         .or_else(|_| try_parse_typespec_union(state, offset))
@@ -2136,6 +2138,42 @@ fn try_parse_typespec_map(state: &PState, offset: usize) -> ParserResult<Typespe
     let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
 
     Ok((Typespec::Map(pairs), offset))
+}
+
+fn try_parse_typespec_struct(state: &PState, offset: usize) -> ParserResult<Typespec> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "map")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "%")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "struct")?;
+    let (struct_name, offset) = try_parse_identifier(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
+
+    let offset = try_consume(
+        state,
+        offset,
+        Box::new(|state, offset| {
+            try_parse_grammar_name(state, offset, "_items_with_trailing_separator")
+        }),
+    );
+
+    let key_value_parser =
+        |state, offset| try_parse_specific_binary_operator_typespec(state, offset, "=>");
+
+    let (expression_pairs, offset) = try_parse_sep_by(
+        state,
+        offset,
+        Box::new(key_value_parser),
+        Box::new(comma_parser),
+    )
+    .unwrap_or_else(|_| (vec![], offset));
+
+    // Keyword-notation-only map
+    let (keyword_pairs, offset) =
+        try_parse_keyword_typespecs(state, offset).unwrap_or((vec![], offset));
+
+    let pairs = expression_pairs.into_iter().chain(keyword_pairs).collect();
+    let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
+
+    Ok((Typespec::Struct(struct_name, pairs), offset))
 }
 
 fn try_parse_map(state: &PState, offset: usize) -> ParserResult<Map> {
@@ -6483,6 +6521,46 @@ mod tests {
                 ],
                 Box::new(Typespec::LocalType("atom".to_string(), vec![]))
             ))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_nonempty_struct() {
+        let code = "
+        @type t() :: %__MODULE__{:name => binary(), age: integer()}
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("t".to_string(), vec![])),
+            Box::new(Typespec::Struct(
+                "__MODULE__".to_string(),
+                vec![
+                    (
+                        Typespec::Atom("name".to_string()),
+                        Typespec::LocalType("binary".to_string(), vec![])
+                    ),
+                    (
+                        Typespec::Atom("age".to_string()),
+                        Typespec::LocalType("integer".to_string(), vec![])
+                    ),
+                ]
+            ))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_typespec_empty_struct() {
+        let code = "
+        @type t() :: %__MODULE__{}
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("t".to_string(), vec![])),
+            Box::new(Typespec::Struct("__MODULE__".to_string(), vec![],))
         ))]);
 
         assert_eq!(result, target);
