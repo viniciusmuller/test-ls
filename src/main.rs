@@ -2013,9 +2013,10 @@ fn try_parse_atom(state: &PState, offset: usize) -> ParserResult<Atom> {
 fn try_parse_quoted_atom(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "quoted_atom")?;
     let (_, offset) = try_parse_grammar_name(state, offset, ":")?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "\"")?;
+    let delimiters = vec!["\"", "'"];
+    let (_, offset) = try_parse_either_token(state, offset, &delimiters)?;
     let (atom_content, offset) = try_parse_quoted_content(state, offset)?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "\"")?;
+    let (_, offset) = try_parse_either_token(state, offset, &delimiters)?;
     Ok((Expression::Atom(atom_content), offset))
 }
 
@@ -3437,6 +3438,14 @@ mod tests {
 
         let target = Block(vec![atom!("john #{name}")]);
 
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_single_quoted_atom_with_interpolation() {
+        let code = ":'john #{name}'";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![atom!("john #{name}")]);
         assert_eq!(result, target);
     }
 
@@ -7161,4 +7170,12 @@ mod tests {
 //
 // TODO: parse for with filter clauses
 //
+// TODO: allow trailing commas in list, tuples, maps, bitstrings
+//
+// TODO: power operator **
+//
+// TODO: Math."++add++"(1, 2)
+//
 // TODO: parse bitstrings
+//
+// TODO: add stabs as an expression (a, b -> c, d)
