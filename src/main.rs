@@ -16,8 +16,8 @@ type Identifier = String;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Parameter {
-    expression: Box<Expression>,
-    default: Option<Box<Expression>>,
+    expression: Expression,
+    default: Option<Expression>,
 }
 
 // TODO: move is_private field to Defp variation of the expression enum
@@ -1066,7 +1066,7 @@ fn try_parse_parameter(state: &PState, offset: usize) -> ParserResult<Parameter>
             })
             .map(|(expr, offset)| {
                 let expr = Parameter {
-                    expression: Box::new(expr),
+                    expression: expr,
                     default: None,
                 };
 
@@ -1082,8 +1082,8 @@ fn try_parse_parameter_default_value(state: &PState, offset: usize) -> ParserRes
     let (default, offset) = try_parse_expression(state, offset)?;
 
     let parameter = Parameter {
-        expression: Box::new(expression),
-        default: Some(Box::new(default)),
+        expression,
+        default: Some(default),
     };
 
     Ok((parameter, offset))
@@ -3820,7 +3820,7 @@ mod tests {
             ))),
             guard_expression: None,
             parameters: vec![Parameter {
-                expression: Box::new(list!(tuple!(atom!("do"), id!("block")))),
+                expression: list!(tuple!(atom!("do"), id!("block"))),
                 default: None,
             }],
         })]);
@@ -3904,8 +3904,8 @@ mod tests {
             name: "func".to_string(),
             is_private: false,
             parameters: vec![Parameter {
-                expression: Box::new(id!("a")),
-                default: Some(Box::new(int!(10))),
+                expression: id!("a"),
+                default: Some(int!(10)),
             }],
             body: Box::new(_do!(int!(10))),
             guard_expression: None,
@@ -3943,10 +3943,10 @@ mod tests {
             name: "func".to_string(),
             is_private: false,
             parameters: vec![Parameter {
-                expression: Box::new(Expression::Map(Map {
+                expression: Expression::Map(Map {
                     entries: vec![(atom!("a"), id!("value"))],
                     updated: None,
-                })),
+                }),
                 default: None,
             }],
             body: Box::new(_do!(id!("value"))),
@@ -3968,7 +3968,7 @@ mod tests {
             name: "guarded".to_string(),
             is_private: false,
             parameters: vec![Parameter {
-                expression: Box::new(id!("a")),
+                expression: id!("a"),
                 default: None,
             }],
             body: Box::new(_do!(binary_operation!(
@@ -4020,15 +4020,15 @@ mod tests {
             body: Box::new(_do!(Block(vec![]))),
             parameters: vec![
                 Parameter {
-                    expression: Box::new(id!("a")),
+                    expression: id!("a"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("b")),
+                    expression: id!("b"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("c")),
+                    expression: id!("c"),
                     default: None,
                 },
             ],
@@ -4061,15 +4061,15 @@ mod tests {
             ))),
             parameters: vec![
                 Parameter {
-                    expression: Box::new(id!("a")),
+                    expression: id!("a"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("b")),
+                    expression: id!("b"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("c")),
+                    expression: id!("c"),
                     default: None,
                 },
             ],
@@ -5806,15 +5806,15 @@ mod tests {
             guard_expression: None,
             parameters: vec![
                 Parameter {
-                    expression: Box::new(id!("a")),
+                    expression: id!("a"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("b")),
+                    expression: id!("b"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("c")),
+                    expression: id!("c"),
                     default: None,
                 },
             ],
@@ -5848,15 +5848,15 @@ mod tests {
             guard_expression: None,
             parameters: vec![
                 Parameter {
-                    expression: Box::new(id!("a")),
+                    expression: id!("a"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("b")),
+                    expression: id!("b"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("c")),
+                    expression: id!("c"),
                     default: None,
                 },
             ],
@@ -5873,7 +5873,7 @@ mod tests {
             body: Box::new(_do!(bool!(true))),
             guard_expression: Some(Box::new(call!(id!("is_integer"), id!("x")))),
             parameters: vec![Parameter {
-                expression: Box::new(id!("x")),
+                expression: id!("x"),
                 default: None,
             }],
         })]);
@@ -5907,8 +5907,8 @@ mod tests {
             name: "macro".to_string(),
             is_private: true,
             parameters: vec![Parameter {
-                expression: Box::new(id!("a")),
-                default: Some(Box::new(int!(10))),
+                expression: id!("a"),
+                default: Some(int!(10)),
             }],
             body: Box::new(_do!(int!(10))),
             guard_expression: None,
@@ -7089,7 +7089,7 @@ mod tests {
                 binary_operation!(id!("status"), BinaryOperator::LessThan, int!(400))
             )),
             parameters: vec![Parameter {
-                expression: Box::new(id!("status")),
+                expression: id!("status"),
                 default: None,
             }],
         })]);
@@ -7111,7 +7111,7 @@ mod tests {
                 int!(10)
             )),
             parameters: vec![Parameter {
-                expression: Box::new(id!("value")),
+                expression: id!("value"),
                 default: None,
             }],
         })]);
@@ -7130,16 +7130,16 @@ mod tests {
             is_private: false,
             parameters: vec![
                 Parameter {
-                    expression: Box::new(id!("a")),
+                    expression: id!("a"),
                     default: None,
                 },
                 Parameter {
-                    expression: Box::new(id!("b")),
-                    default: Some(Box::new(nil!())),
+                    expression: id!("b"),
+                    default: Some(nil!()),
                 },
                 Parameter {
-                    expression: Box::new(id!("c")),
-                    default: Some(Box::new(int!(10))),
+                    expression: id!("c"),
+                    default: Some(int!(10)),
                 },
             ],
         })]);
