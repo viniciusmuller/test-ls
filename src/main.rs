@@ -1662,7 +1662,7 @@ fn try_parse_sigil(state: &PState, offset: usize) -> ParserResult<Expression> {
 }
 
 fn try_parse_sigil_content(state: &PState, offset: usize) -> ParserResult<String> {
-    let sigil_open_delimiters = vec!["/", "|", "\"", "'", "(", " [", "{", "<", r#"""""#];
+    let sigil_open_delimiters = vec!["/", "|", "\"", "'", "(", "[", "{", "<", r#"""""#];
     let (_, offset) = try_parse_either_token(state, offset, &sigil_open_delimiters)?;
 
     let parser = |state, offset| {
@@ -1675,7 +1675,7 @@ fn try_parse_sigil_content(state: &PState, offset: usize) -> ParserResult<String
     };
 
     let end_parser = |state, offset| {
-        let sigil_close_delimiters = vec!["/", "|", "\"", "'", ")", " ]", "}", ">", r#"""""#];
+        let sigil_close_delimiters = vec!["/", "|", "\"", "'", ")", "]", "}", ">", r#"""""#];
         try_parse_either_token(state, offset, &sigil_close_delimiters)
     };
 
@@ -6018,6 +6018,19 @@ mod tests {
         let target = Block(vec![Expression::Sigil(Sigil {
             name: "H".to_string(),
             content: "\n        <html><%= hey there! %></html>\n        ".to_string(),
+            modifier: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_sigil_square_delimiter() {
+        let code = "~D[2135-01-01]";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Sigil(Sigil {
+            name: "D".to_string(),
+            content: "2135-01-01".to_string(),
             modifier: None,
         })]);
 
