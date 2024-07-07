@@ -1726,8 +1726,20 @@ fn try_parse_case_arm_guard(
     let (guard_expression, offset) = try_parse_expression(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "body")?;
-    let (body, offset) = try_parse_expression(state, offset)?;
 
+    let end_parser = |state, offset| {
+        try_parse_grammar_name(state, offset, "stab_clause")
+            .or_else(|_| try_parse_grammar_name(state, offset, "end"))
+    };
+
+    let (mut body, offset) = parse_until(
+        state,
+        offset,
+        Box::new(try_parse_expression),
+        Box::new(end_parser),
+    )?;
+
+    let body = normalize_block(&mut body);
     Ok(((left, body, guard_expression), offset))
 }
 
@@ -2741,8 +2753,6 @@ fn try_parse_defguard(state: &PState, offset: usize) -> ParserResult<Expression>
         parameters,
     };
 
-    dbg!(&guard);
-
     let guard_expr = if is_private {
         Expression::Defguardp(guard)
     } else {
@@ -3380,8 +3390,6 @@ mod tests {
 
         assert_eq!(result, target);
     }
-
-    // TODO: parse anonymous function call: foo.()
 
     #[test]
     fn parse_local_call() {
@@ -5085,6 +5093,41 @@ mod tests {
                 CaseArm {
                     left: Box::new(id!("_else")),
                     body: Box::new(nil!()),
+                    guard_expr: None,
+                },
+            ],
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_case_guard_block_clause() {
+        let code = r#"
+        case resp do
+          resp when is_integer(resp) ->
+            a = resp
+            a
+
+          _else ->
+            0
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Expression::Block(vec![Expression::Case(CaseExpression {
+            target_expression: Box::new(id!("resp")),
+            arms: vec![
+                CaseArm {
+                    left: Box::new(id!("resp")),
+                    body: Box::new(Expression::Block(vec![
+                        binary_operation!(id!("a"), BinaryOperator::Match, id!("resp")),
+                        id!("a")
+                    ])),
+                    guard_expr: Some(Box::new(call!(id!("is_integer"), id!("resp")))),
+                },
+                CaseArm {
+                    left: Box::new(id!("_else")),
+                    body: Box::new(int!(0)),
                     guard_expr: None,
                 },
             ],
