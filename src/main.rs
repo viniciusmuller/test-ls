@@ -278,8 +278,8 @@ struct CaseExpression {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum WithClause {
-    Binding(Expression, Expression),
-    Match(Expression, Expression),
+    Binding(WithPattern),
+    Match(WithPattern),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -314,12 +314,18 @@ struct CondArm {
     body: Box<Expression>,
 }
 
-// TODO: try to generalize this "stab" AST structure
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct CaseArm {
     left: Box<Expression>,
     body: Box<Expression>,
     guard_expr: Option<Box<Expression>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct WithPattern {
+    pattern: Expression,
+    source: Expression,
+    guard_expr: Option<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1470,11 +1476,20 @@ fn try_parse_with_expression(state: &PState, offset: usize) -> ParserResult<Expr
 
     *state.expecting_do.borrow_mut() = false;
     let clause_parser = |state, offset| {
-        try_parse_specific_binary_operator(state, offset, "<-")
-            .map(|((left, right), offset)| (WithClause::Match(left, right), offset))
+        try_parse_with_pattern(state, offset)
+            .map(|(pattern, offset)| (WithClause::Match(pattern), offset))
             .or_else(|_| {
-                try_parse_specific_binary_operator(state, offset, "=")
-                    .map(|((left, right), offset)| (WithClause::Binding(left, right), offset))
+                try_parse_specific_binary_operator(state, offset, "=").map(
+                    |((left, right), offset)| {
+                        let with_pattern = WithPattern {
+                            pattern: left,
+                            source: right,
+                            guard_expr: None,
+                        };
+
+                        (WithClause::Binding(with_pattern), offset)
+                    },
+                )
             })
     };
     let (arguments, offset) = try_parse_sep_by(
@@ -1484,6 +1499,8 @@ fn try_parse_with_expression(state: &PState, offset: usize) -> ParserResult<Expr
         Box::new(comma_parser),
     )?;
     *state.expecting_do.borrow_mut() = true;
+
+    dbg!(&arguments);
 
     let offset = try_consume(state, offset, Box::new(comma_parser));
     let ((do_block, else_block), offset) = try_parse_with_do(state, offset)?;
@@ -1495,6 +1512,43 @@ fn try_parse_with_expression(state: &PState, offset: usize) -> ParserResult<Expr
     };
 
     Ok((Expression::With(with), offset))
+}
+
+fn try_parse_with_pattern(state: &PState, offset: usize) -> ParserResult<WithPattern> {
+    try_parse_simple_with(state, offset).or_else(|_| try_parse_guarded_with(state, offset))
+}
+
+fn try_parse_simple_with(state: &PState, offset: usize) -> ParserResult<WithPattern> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
+    let (pattern, offset) = try_parse_expression(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "<-")?;
+    let (right, offset) = try_parse_expression(state, offset)?;
+
+    let with_pattern = WithPattern {
+        pattern,
+        source: right,
+        guard_expr: None,
+    };
+
+    Ok((with_pattern, offset))
+}
+
+fn try_parse_guarded_with(state: &PState, offset: usize) -> ParserResult<WithPattern> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
+    let (pattern, offset) = try_parse_expression(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "when")?;
+    let (guard, offset) = try_parse_expression(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "<-")?;
+    let (right, offset) = try_parse_expression(state, offset)?;
+
+    let with_pattern = WithPattern {
+        pattern,
+        source: right,
+        guard_expr: Some(guard),
+    };
+
+    Ok((with_pattern, offset))
 }
 
 fn try_parse_access_expression(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -3307,6 +3361,17 @@ macro_rules! macrocallback {
 macro_rules! spec {
     ( $body:expr ) => {
         Expression::AttributeDef(Attribute::Spec($body))
+    };
+}
+
+#[macro_export]
+macro_rules! with_pattern {
+    ( $left:expr, $right:expr ) => {
+        WithClause::Match(WithPattern {
+            pattern: $left,
+            source: $right,
+            guard_expr: None,
+        })
     };
 }
 
@@ -6369,7 +6434,7 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::With(WithExpression {
             do_block: Box::new(atom!("ok")),
-            match_clauses: vec![(WithClause::Match(bool!(true), call_no_args!(id!("func?"))))],
+            match_clauses: vec![with_pattern!(bool!(true), call_no_args!(id!("func?")))],
             else_clauses: None,
         })]);
 
@@ -6394,10 +6459,10 @@ mod tests {
         let target = Block(vec![Expression::With(WithExpression {
             do_block: Box::new(atom!("ok")),
             match_clauses: vec![
-                WithClause::Match(bool!(true), call_no_args!(id!("func?"))),
-                WithClause::Match(
+                with_pattern!(bool!(true), call_no_args!(id!("func?"))),
+                with_pattern!(
                     tuple!(atom!("ok"), id!("result")),
-                    call_no_args!(id!("other_func")),
+                    call_no_args!(id!("other_func"))
                 ),
             ],
             else_clauses: None,
@@ -6425,10 +6490,14 @@ mod tests {
         let target = Block(vec![Expression::With(WithExpression {
             do_block: Box::new(atom!("ok")),
             match_clauses: vec![
-                WithClause::Binding(id!("a"), call!(id!("to_string"), id!("x"))),
-                WithClause::Match(
+                WithClause::Binding(WithPattern {
+                    pattern: id!("a"),
+                    source: call!(id!("to_string"), id!("x")),
+                    guard_expr: None,
+                }),
+                with_pattern!(
                     tuple!(atom!("ok"), id!("result")),
-                    call!(id!("other_func"), id!("a")),
+                    call!(id!("other_func"), id!("a"))
                 ),
             ],
             else_clauses: None,
@@ -6456,9 +6525,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::With(WithExpression {
             do_block: Box::new(atom!("ok")),
-            match_clauses: vec![WithClause::Match(
+            match_clauses: vec![with_pattern!(
                 tuple!(atom!("ok"), id!("result")),
-                call!(id!("other_func"), id!("a")),
+                call!(id!("other_func"), id!("a"))
             )],
             else_clauses: Some(vec![CaseArm {
                 left: Box::new(tuple!(atom!("error"), id!("reason"))),
@@ -6480,15 +6549,12 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::With(WithExpression {
             do_block: Box::new(atom!("ok")),
-            match_clauses: vec![WithClause::Match(
-                tuple!(atom!("ok"), id!("result")),
-                call!(id!("other_func"), id!("a")),
-            )],
-            else_clauses: Some(vec![CaseArm {
-                left: Box::new(tuple!(atom!("error"), id!("reason"))),
-                body: Box::new(id!("reason")),
-                guard_expr: None,
-            }]),
+            match_clauses: vec![WithClause::Match(WithPattern {
+                pattern: tuple!(atom!("ok"), id!("result")),
+                source: call!(id!("other_func"), id!("a")),
+                guard_expr: Some(call!(id!("is_integer"), id!("result"))),
+            })],
+            else_clauses: None,
         })]);
 
         assert_eq!(result, target);
@@ -6507,9 +6573,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::With(WithExpression {
             do_block: Box::new(atom!("ok")),
-            match_clauses: vec![WithClause::Match(
+            match_clauses: vec![with_pattern!(
                 tuple!(atom!("ok"), id!("result")),
-                call!(id!("other_func"), id!("a")),
+                call!(id!("other_func"), id!("a"))
             )],
             else_clauses: Some(vec![
                 CaseArm {
