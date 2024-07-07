@@ -358,7 +358,7 @@ struct Require {
 struct Use {
     target: Vec<Atom>,
     // TODO: maybe make empty list by default instead of None
-    options: Option<List>,
+    options: Option<Box<Expression>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -2968,14 +2968,24 @@ fn try_parse_alias(state: &PState, offset: usize) -> ParserResult<Expression> {
 }
 
 fn try_parse_use(state: &PState, offset: usize) -> ParserResult<Expression> {
-    let ((used_module, options), offset) = try_parse_module_operator(state, offset, "use")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+    let (_, offset) = try_parse_keyword(state, offset, "use")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
+    let (target_module, offset) = try_parse_module_operator_name(state, offset)?;
 
-    let require = Expression::Use(Use {
-        target: used_module,
-        options,
-    });
+    let (args, offset) = if let Ok((_, offset)) = try_parse_grammar_name(state, offset, ",") {
+        let (args, offset) = try_parse_expression(state, offset)?;
+        (Some(Box::new(args)), offset)
+    } else {
+        (None, offset)
+    };
 
-    Ok((require, offset))
+    let use_expr = Use {
+        target: target_module,
+        options: args,
+    };
+
+    Ok((Expression::Use(use_expr), offset))
 }
 
 fn try_parse_dot_access(state: &PState, offset: usize) -> ParserResult<Expression> {
@@ -5065,10 +5075,21 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Use(Use {
             target: vec!["MyModule".to_string()],
-            options: Some(List {
-                items: vec![tuple!(atom!("some"), atom!("options"))],
-                cons: None,
-            }),
+            options: Some(Box::new(list!(tuple!(atom!("some"), atom!("options"))))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_use_literal_arg() {
+        let code = r#"
+        use MyApp.Web, :controller
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Use(Use {
+            target: vec!["MyApp.Web".to_string()],
+            options: Some(Box::new(atom!("controller"))),
         })]);
 
         assert_eq!(result, target);
@@ -6966,6 +6987,8 @@ mod tests {
         assert_eq!(result, target);
     }
 }
+
+// TODO: rescue blocks (stab clauses) on else branch
 
 // TODO: support specs with guards for @specs
 // https://hexdocs.pm/elixir/typespecs.html#defining-a-specification
