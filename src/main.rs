@@ -456,6 +456,7 @@ enum Expression {
     Quote(Quote),
     MacroDef(Macro),
     Call(Call),
+    AnonymousCall(Call),
     Do(Do),
 }
 
@@ -1160,6 +1161,32 @@ fn try_parse_local_call(state: &PState, offset: usize) -> ParserResult<Expressio
 
     let call = Expression::Call(Call {
         target: Box::new(Expression::Identifier(local_callee)),
+        remote_callee: None,
+        arguments,
+        do_block,
+    });
+
+    Ok((call, offset))
+}
+
+fn try_parse_anonymous_call(state: &PState, offset: usize) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "dot")?;
+    let (local_callee, offset) = try_parse_expression(state, offset)?;
+    let (_, offset) = try_parse_grammar_name(state, offset, ".")?;
+
+    let (arguments, offset) = try_parse_call_arguments(state, offset).unwrap_or((vec![], offset));
+
+    let (do_block, offset) = if *state.expecting_do.borrow() {
+        try_parse_do(state, offset)
+            .map(|(block, offset)| (Some(block), offset))
+            .unwrap_or((None, offset))
+    } else {
+        (None, offset)
+    };
+
+    let call = Expression::AnonymousCall(Call {
+        target: Box::new(local_callee),
         remote_callee: None,
         arguments,
         do_block,
@@ -2423,7 +2450,10 @@ fn try_parse_tuple(state: &PState, offset: usize) -> Result<(Tuple, usize), Pars
 
     let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
 
-    let expressions = expressions.into_iter().chain(keyword_pairs).collect::<Vec<_>>();
+    let expressions = expressions
+        .into_iter()
+        .chain(keyword_pairs)
+        .collect::<Vec<_>>();
     let tuple = Tuple { items: expressions };
     Ok((tuple, offset))
 }
@@ -2572,6 +2602,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
         .or_else(|err| try_parse_use(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_import(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_local_call(state, offset).map_err(|_| err))
+        .or_else(|err| try_parse_anonymous_call(state, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_module_name(state, offset)
                 .map(|(atom, offset)| (Expression::Atom(atom), offset))
@@ -6601,6 +6632,60 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_lambda_var_call() {
+        let code = "
+        func.()
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::AnonymousCall(Call {
+            target: Box::new(id!("func")),
+            remote_callee: None,
+            arguments: vec![],
+            do_block: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    // #[test]
+    // fn parse_lambda_do_block_call() {
+    //     let code = "
+    //     func.()
+    //     ";
+    //     let result = parse(&code).unwrap();
+    //     let target = Block(vec![Expression::AnonymousCall(Call {
+    //         target: Box::new(id!("func")),
+    //         remote_callee: None,
+    //         arguments: vec![],
+    //         do_block: None,
+    //     })]);
+
+    //     assert_eq!(result, target);
+    // }
+
+    #[test]
+    fn parse_lambda_expression_call() {
+        let code = "
+        (fn a -> a + 1 end).(10)
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::AnonymousCall(Call {
+            target: Box::new(Expression::Grouping(Box::new(Expression::Lambda(Lambda {
+                clauses: vec![LambdaClause {
+                    arguments: vec![id!("a")],
+                    body: binary_operation!(id!("a"), BinaryOperator::Plus, int!(1)),
+                    guard: None,
+                }],
+            })))),
+            remote_callee: None,
+            arguments: vec![int!(10)],
+            do_block: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: support specs with guards for @specs
@@ -6610,9 +6695,3 @@ mod tests {
 // TODO: separate remote from local calls in the Expression enum?
 //
 // TODO: parse bitstrings
-
-// TODO: parse certain attributes that take typespecs such as @callback
-
-// TODO: parse anonymous function call
-// TODO: (fn a -> a + 1 end).(10)
-// think about calls whose callee is not an identifier but rather an expression
