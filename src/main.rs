@@ -2202,7 +2202,6 @@ fn try_parse_map(state: &PState, offset: usize) -> ParserResult<Map> {
     )
     .unwrap_or_else(|_| (vec![], offset));
 
-    // Keyword-notation-only map
     let (keyword_pairs, offset) = try_parse_keyword_expressions(state, offset)
         .map(|(list, offset)| (convert_keyword_expression_lists_to_tuples(list), offset))
         .unwrap_or((vec![], offset));
@@ -2221,7 +2220,8 @@ fn try_parse_struct(state: &PState, offset: usize) -> ParserResult<Struct> {
     let (_, offset) = try_parse_grammar_name(state, offset, "map")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "struct")?;
-    let (struct_name, offset) = try_parse_module_name(state, offset)?;
+    let (struct_name, offset) =
+        try_parse_module_name(state, offset).or_else(|_| try_parse_identifier(state, offset))?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
 
     let offset = try_consume(
@@ -2416,8 +2416,14 @@ fn try_parse_tuple(state: &PState, offset: usize) -> Result<(Tuple, usize), Pars
         Ok(result) => result,
         Err(_) => (vec![], offset),
     };
+
+    let (keyword_pairs, offset) = try_parse_keyword_expressions(state, offset)
+        .map(|(list, offset)| (Some(Expression::List(list)), offset))
+        .unwrap_or((None, offset));
+
     let (_, offset) = try_parse_grammar_name(state, offset, "}")?;
 
+    let expressions = expressions.into_iter().chain(keyword_pairs).collect::<Vec<_>>();
     let tuple = Tuple { items: expressions };
     Ok((tuple, offset))
 }
@@ -3901,6 +3907,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_tuple_keyword() {
+        let code = "
+        {:id, :binary_id, autogenerate: true}
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![tuple!(
+            atom!("id"),
+            atom!("binary_id"),
+            list!(tuple!(atom!("autogenerate"), bool!(true)))
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_empty_tuple() {
         let code = "{}";
         let result = parse(&code).unwrap();
@@ -4179,6 +4200,21 @@ mod tests {
                 (atom!("name"), Expression::String("john".to_string())),
                 (atom!("age"), int!(25)),
             ],
+            updated: None,
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_struct_identifier_name() {
+        let code = r#"
+        %my_struct{}
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Struct(Struct {
+            name: "my_struct".to_string(),
+            entries: vec![],
             updated: None,
         })]);
 
