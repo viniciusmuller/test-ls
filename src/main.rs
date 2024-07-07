@@ -2299,7 +2299,8 @@ fn try_parse_typespec_struct(state: &PState, offset: usize) -> ParserResult<Type
     let (_, offset) = try_parse_grammar_name(state, offset, "map")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "%")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "struct")?;
-    let (struct_name, offset) = try_parse_identifier(state, offset)?;
+    let (struct_name, offset) =
+        try_parse_identifier(state, offset).or_else(|_| try_parse_module_name(state, offset))?;
     let (_, offset) = try_parse_grammar_name(state, offset, "{")?;
 
     let offset = try_consume(
@@ -6874,6 +6875,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_typespec_struct_module_name() {
+        let code = "
+        @type t() :: %Ecto.Changeset{}
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("t".to_string(), vec![])),
+            Box::new(Typespec::Struct("Ecto.Changeset".to_string(), vec![],))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_lambda_var_call() {
         let code = "
         func.()
@@ -6998,5 +7013,7 @@ mod tests {
 //
 // TODO: parse for with more forms and options (do is not necessarily on the end)
 // TODO: for site <- sites, do: {site.id, site.domain}, into: %{}
+//
+// TODO: parse for with filter clauses
 //
 // TODO: parse bitstrings
