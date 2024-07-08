@@ -537,12 +537,12 @@ fn main() {
 
     successes.sort_by(|(_, e1), (_, e2)| e2.cmp(e1));
 
-    for path in successes.iter().take(10) {
-        println!("succesfully parsed {:?}", path);
-    }
-
     for path in &failures {
         println!("failed to parsed {:?}", path);
+    }
+
+    for path in successes.iter().take(10) {
+        println!("succesfully parsed {:?}", path);
     }
 
     println!(
@@ -1611,7 +1611,7 @@ fn try_parse_for_expression(state: &PState, offset: usize) -> ParserResult<Expre
 
 fn try_parse_guard(state: &PState, offset: usize) -> ParserResult<Guard> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
-    let  offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
+    let offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
 
     let (left, offset) = try_parse_expression(state, offset)?;
     let (_, offset) = try_parse_grammar_name(state, offset, "when")?;
@@ -2026,7 +2026,8 @@ fn try_parse_local_type(state: &PState, offset: usize) -> ParserResult<Typespec>
 fn try_parse_remote_type(state: &PState, offset: usize) -> ParserResult<Typespec> {
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "dot")?;
-    let (remote_callee, offset) = try_parse_module_name(state, offset)?;
+    let (remote_callee, offset) =
+        try_parse_module_name(state, offset).or_else(|_| try_parse_atom(state, offset))?;
     let (_, offset) = try_parse_grammar_name(state, offset, ".")?;
     let (local_callee, offset) = try_parse_identifier(state, offset)?;
     let (arguments, offset) =
@@ -6940,6 +6941,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_typespec_remote_erlang_type() {
+        let code = "
+        @type t() :: :uri_string.uri_string()
+        ";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![_type!(Typespec::Binding(
+            Box::new(Typespec::LocalType("t".to_string(), vec![])),
+            Box::new(Typespec::RemoteType("uri_string".to_string(), "uri_string".to_string(), vec![]))
+        ))]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_lambda_var_call() {
         let code = "
         func.()
@@ -7178,6 +7193,20 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_defdelegate() {
+        let code = r#"
+        defdelegate size(cache_name \\ name()), to: Cache.Adapter
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Guard(Guard {
+            left: Box::new(id!("a")),
+            right: Box::new(call!(id!("is_integer"), id!("a"))),
+        })]);
+
+        assert_eq!(result, target);
+    }
 }
 
 // TODO: support specs with guards for @specs
@@ -7194,5 +7223,3 @@ mod tests {
 // TODO: Math."++add++"(1, 2)
 //
 // TODO: parse bitstrings
-//
-// TODO: maybe update Stab to just be left, right (drop guard parsing from it, so it would be on the left expr always)
