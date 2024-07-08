@@ -1,6 +1,7 @@
 use core::fmt;
 use std::cell::RefCell;
 use std::fmt::Debug;
+use std::time::{Duration, Instant};
 use std::{env, ffi::OsStr, fs, path::Path};
 
 use tree_sitter::{Node, Tree};
@@ -531,12 +532,10 @@ fn get_tree(code: &str) -> Tree {
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    use std::time::Instant;
-    let now = Instant::now();
-    let (successes, failures) = walkdir(&args[1]);
-    let elapsed = now.elapsed();
+    let (mut successes, failures) = walkdir(&args[1]);
+    successes.sort_by(|(_, e1), (_, e2)| e2.cmp(e1));
 
-    for path in &successes {
+    for path in successes.iter().take(10) {
         println!("succesfully parsed {:?}", path);
     }
 
@@ -554,11 +553,9 @@ fn main() {
         "successes total size: {} bytes",
         std::mem::size_of_val(&*successes)
     );
-
-    println!("Elapsed: {:.2?}", elapsed);
 }
 
-fn walkdir(path: &str) -> (Vec<String>, Vec<String>) {
+fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
     let mut file_paths = Vec::new();
 
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
@@ -576,20 +573,27 @@ fn walkdir(path: &str) -> (Vec<String>, Vec<String>) {
     use rayon::prelude::*;
 
     let results = file_paths
-        .par_iter()
-        .map(|path| (path, parse_file(path)))
+        // .par_iter()
+        .iter()
+        .map(|path| {
+            let now = Instant::now();
+            let result = parse_file(path);
+            let elapsed = now.elapsed();
+            println!("now parsing: {}, {:.2?}", path.as_os_str().to_str().unwrap(), elapsed);
+            (path, result, elapsed)
+        })
         .collect::<Vec<_>>();
 
     let successes = results
         .iter()
-        .filter(|(_path, e)| e.is_ok())
-        .map(|(path, _)| path.to_str().unwrap().to_owned())
-        .collect();
+        .filter(|(_path, e, _)| e.is_ok())
+        .map(|(path, _, elapsed)| (path.to_str().unwrap().to_owned(), elapsed.to_owned()))
+        .collect::<Vec<_>>();
 
     let failures = results
-        .iter()
-        .filter(|(_path, e)| e.is_err())
-        .map(|(path, _)| path.to_str().unwrap().to_owned())
+        .into_iter()
+        .filter(|(_path, e, _)| e.is_err())
+        .map(|(path, _, _)| path.to_str().unwrap().to_owned())
         .collect();
 
     return (successes, failures);
@@ -7243,3 +7247,5 @@ mod tests {
 // TODO: Math."++add++"(1, 2)
 //
 // TODO: parse bitstrings
+//
+// TODO: maybe update Stab to just be left, right (drop guard parsing from it, so it would be on the left expr always)
