@@ -153,6 +153,8 @@ enum BinaryOperator {
     Div,
     /// *
     Mult,
+    /// **
+    Pow,
     /// ++
     ListConcatenation,
     /// --
@@ -273,7 +275,7 @@ struct ConditionalExpression {
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct CaseExpression {
     target_expression: Box<Expression>,
-    arms: Vec<CaseArm>,
+    arms: Vec<Stab>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -286,7 +288,7 @@ enum WithClause {
 struct WithExpression {
     do_block: Box<Expression>,
     match_clauses: Vec<WithClause>,
-    else_clauses: Option<Vec<CaseArm>>,
+    else_clauses: Option<Vec<Stab>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -306,20 +308,7 @@ enum ForGenerator {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct CondExpression {
-    arms: Vec<CondArm>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct CondArm {
-    condition: Box<Expression>,
-    body: Box<Expression>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct CaseArm {
-    left: Box<Expression>,
-    body: Box<Expression>,
-    guard_expr: Option<Box<Expression>>,
+    arms: Vec<Stab>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -379,15 +368,8 @@ struct FunctionCapture {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct LambdaClause {
-    arguments: Vec<Expression>,
-    guard: Option<Box<Expression>>,
-    body: Expression,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
 struct Lambda {
-    clauses: Vec<LambdaClause>,
+    clauses: Vec<Stab>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -433,6 +415,15 @@ enum Typespec {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+struct Stab {
+    left: Vec<Expression>,
+    // TODO: maybe let right be only a single Expression and wrap it with ::Block if multiple expressions
+    right: Vec<Expression>,
+    guard: Option<Box<Expression>>,
+}
+
+/// https://hexdocs.pm/elixir/syntax-reference.html
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum Expression {
     Bool(bool),
     Nil,
@@ -476,6 +467,7 @@ enum Expression {
     Sigil(Sigil),
     Quote(Quote),
     MacroDef(Macro),
+    Stab(Stab),
     Call(Call),
     AnonymousCall(Call),
     Do(Do),
@@ -1456,18 +1448,8 @@ fn try_parse_cond_expression(state: &PState, offset: usize) -> ParserResult<Expr
         offset,
         Box::new(try_parse_stab),
         Box::new(end_parser),
-    )
-    .map(|(arms, offset)| {
-        let arms = arms
-            .into_iter()
-            .map(|(left, right)| CondArm {
-                condition: Box::new(left),
-                body: Box::new(right),
-            })
-            .collect();
+    )?;
 
-        (arms, offset)
-    })?;
     let (_, offset) = end_parser(state, offset)?;
 
     let case = CondExpression { arms };
@@ -1583,7 +1565,7 @@ fn try_parse_case_expression(state: &PState, offset: usize) -> ParserResult<Expr
     let (arms, offset) = parse_until(
         state,
         offset,
-        Box::new(try_parse_case_arm),
+        Box::new(try_parse_stab),
         Box::new(try_parse_end_token),
     )?;
     let (_, offset) = try_parse_end_token(state, offset)?;
@@ -1704,15 +1686,10 @@ fn try_parse_lambda(state: &PState, offset: usize) -> ParserResult<Expression> {
     let (_, offset) = try_parse_grammar_name(state, offset, "anonymous_function")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "fn")?;
 
-    let lambda_clause_parser = |state, offset| {
-        try_parse_lambda_simple_clause(state, offset)
-            .or_else(|_| try_parse_lambda_guard_clause(state, offset))
-    };
-
     let (clauses, offset) = parse_until(
         state,
         offset,
-        Box::new(lambda_clause_parser),
+        Box::new(try_parse_stab),
         Box::new(try_parse_end_token),
     )?;
     let (_, offset) = try_parse_grammar_name(state, offset, "end")?;
@@ -1722,7 +1699,11 @@ fn try_parse_lambda(state: &PState, offset: usize) -> ParserResult<Expression> {
     Ok((Expression::Lambda(lambda), offset))
 }
 
-fn try_parse_lambda_simple_clause(state: &PState, offset: usize) -> ParserResult<LambdaClause> {
+fn try_parse_stab(state: &PState, offset: usize) -> ParserResult<Stab> {
+    try_parse_guarded_stab(state, offset).or_else(|_| try_parse_simple_stab(state, offset))
+}
+
+fn try_parse_simple_stab(state: &PState, offset: usize) -> ParserResult<Stab> {
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
     let offset = try_consume(state, offset, Box::new(try_parse_arguments_token));
 
@@ -1737,16 +1718,16 @@ fn try_parse_lambda_simple_clause(state: &PState, offset: usize) -> ParserResult
     let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
     let (body, offset) = try_parse_stab_body(state, offset)?;
 
-    let lambda_clause = LambdaClause {
-        arguments,
-        body,
+    let stab = Stab {
         guard: None,
+        left: arguments,
+        right: body,
     };
 
-    Ok((lambda_clause, offset))
+    Ok((stab, offset))
 }
 
-fn try_parse_lambda_guard_clause(state: &PState, offset: usize) -> ParserResult<LambdaClause> {
+fn try_parse_guarded_stab(state: &PState, offset: usize) -> ParserResult<Stab> {
     let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
@@ -1764,25 +1745,16 @@ fn try_parse_lambda_guard_clause(state: &PState, offset: usize) -> ParserResult<
     let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
     let (body, offset) = try_parse_stab_body(state, offset)?;
 
-    let lambda_clause = LambdaClause {
-        arguments,
-        body,
+    let stab = Stab {
         guard: Some(Box::new(guard)),
+        left: arguments,
+        right: body,
     };
 
-    Ok((lambda_clause, offset))
+    Ok((stab, offset))
 }
 
-fn try_parse_stab(state: &PState, offset: usize) -> ParserResult<(Expression, Expression)> {
-    let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
-    let (left, offset) = try_parse_expression(state, offset)?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
-    let (body, offset) = try_parse_stab_body(state, offset)?;
-    Ok(((left, body), offset))
-}
-
-fn try_parse_stab_body(state: &PState, offset: usize) -> ParserResult<Expression> {
+fn try_parse_stab_body(state: &PState, offset: usize) -> ParserResult<Vec<Expression>> {
     let (_, offset) = try_parse_grammar_name(state, offset, "body")?;
 
     let end_parser = |state, offset| {
@@ -1790,70 +1762,14 @@ fn try_parse_stab_body(state: &PState, offset: usize) -> ParserResult<Expression
             .or_else(|_| try_parse_grammar_name(state, offset, "end"))
     };
 
-    let (mut body, offset) = parse_until(
+    let (body, offset) = parse_until(
         state,
         offset,
         Box::new(try_parse_expression),
         Box::new(end_parser),
     )?;
-    let body = normalize_block(&mut body);
 
     Ok((body, offset))
-}
-
-fn try_parse_case_arm(state: &PState, offset: usize) -> ParserResult<CaseArm> {
-    let (_, offset) = try_parse_grammar_name(state, offset, "stab_clause")?;
-
-    if let Ok(((left, right, guard), offset)) = try_parse_case_arm_guard(state, offset) {
-        let case_arm = CaseArm {
-            left: Box::new(left),
-            body: Box::new(right),
-            guard_expr: Some(Box::new(guard)),
-        };
-
-        return Ok((case_arm, offset));
-    }
-
-    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
-    let (left, offset) = try_parse_expression(state, offset)?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
-    let (body, offset) = try_parse_stab_body(state, offset)?;
-
-    let case_arm = CaseArm {
-        left: Box::new(left),
-        body: Box::new(body),
-        guard_expr: None,
-    };
-
-    Ok((case_arm, offset))
-}
-
-fn try_parse_case_arm_guard(
-    state: &PState,
-    offset: usize,
-) -> ParserResult<(Expression, Expression, Expression)> {
-    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
-    let (left, offset) = try_parse_expression(state, offset)?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "when")?;
-    let (guard_expression, offset) = try_parse_expression(state, offset)?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "->")?;
-    let (_, offset) = try_parse_grammar_name(state, offset, "body")?;
-
-    let end_parser = |state, offset| {
-        try_parse_grammar_name(state, offset, "stab_clause")
-            .or_else(|_| try_parse_grammar_name(state, offset, "end"))
-    };
-
-    let (mut body, offset) = parse_until(
-        state,
-        offset,
-        Box::new(try_parse_expression),
-        Box::new(end_parser),
-    )?;
-
-    let body = normalize_block(&mut body);
-    Ok(((left, body, guard_expression), offset))
 }
 
 fn try_parse_do(state: &PState, offset: usize) -> ParserResult<Do> {
@@ -1947,7 +1863,7 @@ fn normalize_block(block: &mut Vec<Expression>) -> Expression {
 fn try_parse_with_do(
     state: &PState,
     offset: usize,
-) -> ParserResult<(Expression, Option<Vec<CaseArm>>)> {
+) -> ParserResult<(Expression, Option<Vec<Stab>>)> {
     try_parse_with_do_block(state, offset).or_else(|_| {
         try_parse_do_keyword(state, offset)
             .map(|(do_block, offset)| ((*do_block.body, None), offset))
@@ -1958,7 +1874,7 @@ fn try_parse_with_do(
 fn try_parse_with_do_block(
     state: &PState,
     offset: usize,
-) -> ParserResult<(Expression, Option<Vec<CaseArm>>)> {
+) -> ParserResult<(Expression, Option<Vec<Stab>>)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "do_block")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "do")?;
 
@@ -1987,14 +1903,14 @@ fn try_parse_with_do_block(
         .and_then(|(_, offset)| {
             let (_atom, offset) = optional_block_parser(state, offset)?;
 
-            let (else_block, offset) = parse_until(
+            let (else_stabs, offset) = parse_until(
                 state,
                 offset,
-                Box::new(try_parse_case_arm),
+                Box::new(try_parse_stab),
                 Box::new(try_parse_end_token),
             )?;
 
-            Ok((Some(else_block), offset))
+            Ok((Some(else_stabs), offset))
         })
         .unwrap_or((None, offset));
 
@@ -2727,6 +2643,11 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
         .or_else(|err| try_parse_lambda(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_sigil(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_quote(state, offset).map_err(|_| err))
+        .or_else(|err| {
+            try_parse_stab(state, offset)
+                .map(|(stab, offset)| (Expression::Stab(stab), offset))
+                .map_err(|_| err)
+        })
         .or_else(|err| try_parse_remote_function_capture(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_local_function_capture(state, offset).map_err(|_| err))
         .or_else(|err| {
@@ -3071,6 +2992,7 @@ fn try_parse_binary_operator_node(state: &PState, offset: usize) -> ParserResult
         "+" => Ok((BinaryOperator::Plus, offset + 1)),
         "-" => Ok((BinaryOperator::Minus, offset + 1)),
         "*" => Ok((BinaryOperator::Mult, offset + 1)),
+        "**" => Ok((BinaryOperator::Pow, offset + 1)),
         "/" => Ok((BinaryOperator::Div, offset + 1)),
         "++" => Ok((BinaryOperator::ListConcatenation, offset + 1)),
         "--" => Ok((BinaryOperator::ListSubtraction, offset + 1)),
@@ -3581,9 +3503,9 @@ mod tests {
             target: Box::new(id!("transaction")),
             remote_callee: Some(Box::new(atom!("Repo"))),
             arguments: vec![Expression::Lambda(Lambda {
-                clauses: vec![LambdaClause {
-                    arguments: vec![],
-                    body: call!(id!("handle_subscription_created"), id!("params")),
+                clauses: vec![Stab {
+                    left: vec![],
+                    right: vec![call!(id!("handle_subscription_created"), id!("params"))],
                     guard: None,
                 }],
             })],
@@ -4612,6 +4534,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_binary_pow() {
+        let code = "8 ** 8";
+        let result = parse(&code).unwrap();
+        let target = Block(vec![binary_operation!(
+            int!(8),
+            BinaryOperator::Pow,
+            int!(8)
+        )]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
     fn parse_binary_div() {
         let code = "10 / 2";
         let result = parse(&code).unwrap();
@@ -5169,20 +5104,20 @@ mod tests {
         let target = Expression::Block(vec![Expression::Case(CaseExpression {
             target_expression: Box::new(id!("a")),
             arms: vec![
-                CaseArm {
-                    left: Box::new(int!(10)),
-                    body: Box::new(bool!(true)),
-                    guard_expr: None,
+                Stab {
+                    left: vec![int!(10)],
+                    right: vec![bool!(true)],
+                    guard: None,
                 },
-                CaseArm {
-                    left: Box::new(int!(20)),
-                    body: Box::new(bool!(false)),
-                    guard_expr: None,
+                Stab {
+                    left: vec![int!(20)],
+                    right: vec![bool!(false)],
+                    guard: None,
                 },
-                CaseArm {
-                    left: Box::new(id!("_else")),
-                    body: Box::new(nil!()),
-                    guard_expr: None,
+                Stab {
+                    left: vec![id!("_else")],
+                    right: vec![nil!()],
+                    guard: None,
                 },
             ],
         })]);
@@ -5205,22 +5140,22 @@ mod tests {
         let target = Block(vec![Expression::Case(CaseExpression {
             target_expression: Box::new(id!("a")),
             arms: vec![
-                CaseArm {
-                    left: Box::new(int!(10)),
-                    body: Box::new(Expression::Block(vec![
+                Stab {
+                    left: vec![int!(10)],
+                    right: vec![
                         binary_operation!(
                             id!("result"),
                             BinaryOperator::Match,
                             binary_operation!(int!(2), BinaryOperator::Plus, int!(2))
                         ),
                         binary_operation!(id!("result"), BinaryOperator::Equal, int!(4)),
-                    ])),
-                    guard_expr: None,
+                    ],
+                    guard: None,
                 },
-                CaseArm {
-                    left: Box::new(id!("_else")),
-                    body: Box::new(nil!()),
-                    guard_expr: None,
+                Stab {
+                    left: vec![id!("_else")],
+                    right: vec![nil!()],
+                    guard: None,
                 },
             ],
         })]);
@@ -5241,24 +5176,24 @@ mod tests {
         let target = Expression::Block(vec![Expression::Case(CaseExpression {
             target_expression: Box::new(id!("a")),
             arms: vec![
-                CaseArm {
-                    left: Box::new(int!(10)),
-                    body: Box::new(bool!(true)),
-                    guard_expr: Some(Box::new(bool!(true))),
+                Stab {
+                    left: vec![int!(10)],
+                    right: vec![bool!(true)],
+                    guard: Some(Box::new(bool!(true))),
                 },
-                CaseArm {
-                    left: Box::new(int!(20)),
-                    body: Box::new(bool!(false)),
-                    guard_expr: Some(Box::new(binary_operation!(
+                Stab {
+                    left: vec![int!(20)],
+                    right: vec![bool!(false)],
+                    guard: Some(Box::new(binary_operation!(
                         int!(2),
                         BinaryOperator::Equal,
                         int!(2)
                     ))),
                 },
-                CaseArm {
-                    left: Box::new(id!("_else")),
-                    body: Box::new(nil!()),
-                    guard_expr: None,
+                Stab {
+                    left: vec![id!("_else")],
+                    right: vec![nil!()],
+                    guard: None,
                 },
             ],
         })]);
@@ -5282,18 +5217,18 @@ mod tests {
         let target = Expression::Block(vec![Expression::Case(CaseExpression {
             target_expression: Box::new(id!("resp")),
             arms: vec![
-                CaseArm {
-                    left: Box::new(id!("resp")),
-                    body: Box::new(Expression::Block(vec![
+                Stab {
+                    left: vec![id!("resp")],
+                    right: vec![
                         binary_operation!(id!("a"), BinaryOperator::Match, id!("resp")),
                         id!("a"),
-                    ])),
-                    guard_expr: Some(Box::new(call!(id!("is_integer"), id!("resp")))),
+                    ],
+                    guard: Some(Box::new(call!(id!("is_integer"), id!("resp")))),
                 },
-                CaseArm {
-                    left: Box::new(id!("_else")),
-                    body: Box::new(int!(0)),
-                    guard_expr: None,
+                Stab {
+                    left: vec![id!("_else")],
+                    right: vec![int!(0)],
+                    guard: None,
                 },
             ],
         })]);
@@ -5314,29 +5249,33 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Cond(CondExpression {
             arms: vec![
-                CondArm {
-                    condition: Box::new(binary_operation!(
+                Stab {
+                    left: vec![binary_operation!(
                         int!(10),
                         BinaryOperator::GreaterThan,
                         int!(20)
-                    )),
-                    body: Box::new(bool!(true)),
+                    )],
+                    right: vec![bool!(true)],
+                    guard: None,
                 },
-                CondArm {
-                    condition: Box::new(binary_operation!(
+                Stab {
+                    left: vec![binary_operation!(
                         int!(20),
                         BinaryOperator::LessThan,
                         int!(10)
-                    )),
-                    body: Box::new(bool!(true)),
+                    )],
+                    right: vec![bool!(true)],
+                    guard: None,
                 },
-                CondArm {
-                    condition: Box::new(binary_operation!(int!(5), BinaryOperator::Equal, int!(5))),
-                    body: Box::new(int!(10)),
+                Stab {
+                    left: vec![binary_operation!(int!(5), BinaryOperator::Equal, int!(5))],
+                    right: vec![int!(10)],
+                    guard: None,
                 },
-                CondArm {
-                    condition: Box::new(bool!(true)),
-                    body: Box::new(bool!(false)),
+                Stab {
+                    left: vec![bool!(true)],
+                    right: vec![bool!(false)],
+                    guard: None,
                 },
             ],
         })]);
@@ -5357,20 +5296,22 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Expression::Block(vec![Expression::Cond(CondExpression {
             arms: vec![
-                CondArm {
-                    condition: Box::new(binary_operation!(
+                Stab {
+                    left: vec![binary_operation!(
                         int!(10),
                         BinaryOperator::GreaterThan,
                         int!(20)
-                    )),
-                    body: Box::new(Block(vec![
+                    )],
+                    right: vec![
                         binary_operation!(id!("var"), BinaryOperator::Match, int!(5)),
                         binary_operation!(int!(10), BinaryOperator::GreaterThan, id!("var")),
-                    ])),
+                    ],
+                    guard: None,
                 },
-                CondArm {
-                    condition: Box::new(bool!(true)),
-                    body: Box::new(bool!(false)),
+                Stab {
+                    left: vec![bool!(true)],
+                    right: vec![bool!(false)],
+                    guard: None,
                 },
             ],
         })]);
@@ -5539,9 +5480,9 @@ mod tests {
         let code = "fn a -> a + 10 end";
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Lambda(Lambda {
-            clauses: vec![LambdaClause {
-                arguments: vec![id!("a")],
-                body: binary_operation!(id!("a"), BinaryOperator::Plus, int!(10)),
+            clauses: vec![Stab {
+                left: vec![id!("a")],
+                right: vec![binary_operation!(id!("a"), BinaryOperator::Plus, int!(10))],
                 guard: None,
             }],
         })]);
@@ -5556,12 +5497,12 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let vec = vec![Expression::Lambda(Lambda {
-            clauses: vec![LambdaClause {
-                arguments: vec![Expression::Map(Map {
+            clauses: vec![Stab {
+                left: vec![Expression::Map(Map {
                     entries: vec![(atom!("a"), int!(10))],
                     updated: None,
                 })],
-                body: int!(10),
+                right: vec![int!(10)],
                 guard: None,
             }],
         })];
@@ -5580,14 +5521,14 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Lambda(Lambda {
             clauses: vec![
-                LambdaClause {
-                    arguments: vec![int!(1), id!("b")],
-                    body: int!(10),
+                Stab {
+                    left: vec![int!(1), id!("b")],
+                    right: vec![int!(10)],
                     guard: None,
                 },
-                LambdaClause {
-                    arguments: vec![id!("_"), id!("_")],
-                    body: int!(20),
+                Stab {
+                    left: vec![id!("_"), id!("_")],
+                    right: vec![int!(20)],
                     guard: None,
                 },
             ],
@@ -5606,16 +5547,16 @@ mod tests {
         "#;
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Lambda(Lambda {
-            clauses: vec![LambdaClause {
-                arguments: vec![id!("a")],
-                body: Block(vec![
+            clauses: vec![Stab {
+                left: vec![id!("a")],
+                right: vec![
                     binary_operation!(
                         id!("result"),
                         BinaryOperator::Match,
                         binary_operation!(id!("a"), BinaryOperator::Plus, int!(1))
                     ),
                     id!("result"),
-                ]),
+                ],
                 guard: None,
             }],
         })]);
@@ -5633,15 +5574,15 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::Lambda(Lambda {
             clauses: vec![
-                LambdaClause {
-                    arguments: vec![id!("a")],
+                Stab {
+                    left: vec![id!("a")],
                     guard: Some(Box::new(call!(id!("is_integer"), id!("a")))),
-                    body: int!(10),
+                    right: vec![int!(10)],
                 },
-                LambdaClause {
-                    arguments: vec![id!("_")],
+                Stab {
+                    left: vec![id!("_")],
                     guard: None,
-                    body: int!(20),
+                    right: vec![int!(20)],
                 },
             ],
         })]);
@@ -6632,10 +6573,10 @@ mod tests {
                 tuple!(atom!("ok"), id!("result")),
                 call!(id!("other_func"), id!("a"))
             )],
-            else_clauses: Some(vec![CaseArm {
-                left: Box::new(tuple!(atom!("error"), id!("reason"))),
-                body: Box::new(id!("reason")),
-                guard_expr: None,
+            else_clauses: Some(vec![Stab {
+                left: vec![tuple!(atom!("error"), id!("reason"))],
+                right: vec![id!("reason")],
+                guard: None,
             }]),
         })]);
 
@@ -6681,15 +6622,15 @@ mod tests {
                 call!(id!("other_func"), id!("a"))
             )],
             else_clauses: Some(vec![
-                CaseArm {
-                    left: Box::new(tuple!(atom!("error"), id!("reason"))),
-                    body: Box::new(id!("reason")),
-                    guard_expr: Some(Box::new(call!(id!("is_integer"), id!("reason")))),
+                Stab {
+                    left: vec![tuple!(atom!("error"), id!("reason"))],
+                    right: vec![id!("reason")],
+                    guard: Some(Box::new(call!(id!("is_integer"), id!("reason")))),
                 },
-                CaseArm {
-                    left: Box::new(id!("_else")),
-                    body: Box::new(atom!("unknown_error")),
-                    guard_expr: None,
+                Stab {
+                    left: vec![id!("_else")],
+                    right: vec![atom!("unknown_error")],
+                    guard: None,
                 },
             ]),
         })]);
@@ -7066,9 +7007,9 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![Expression::AnonymousCall(Call {
             target: Box::new(Expression::Grouping(Box::new(Expression::Lambda(Lambda {
-                clauses: vec![LambdaClause {
-                    arguments: vec![id!("a")],
-                    body: binary_operation!(id!("a"), BinaryOperator::Plus, int!(1)),
+                clauses: vec![Stab {
+                    left: vec![id!("a")],
+                    right: vec![binary_operation!(id!("a"), BinaryOperator::Plus, int!(1))],
                     guard: None,
                 }],
             })))),
@@ -7155,9 +7096,122 @@ mod tests {
 
         assert_eq!(result, target);
     }
-}
 
-// TODO: rescue blocks (stab clauses) on else branch
+    #[test]
+    fn parse_simple_stab() {
+        let code = r#"
+        quote do
+            _else -> true
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Quote(Quote {
+            options: None,
+            body: Box::new(_do!(Expression::Stab(Stab {
+                left: vec![id!("_else")],
+                right: vec![bool!(true)],
+                guard: None,
+            }))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_multiple_args_left_stab() {
+        let code = r#"
+        quote do
+            20, 10 -> true
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Quote(Quote {
+            options: None,
+            body: Box::new(_do!(Expression::Stab(Stab {
+                left: vec![int!(20), int!(10)],
+                right: vec![bool!(true)],
+                guard: None,
+            }))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_multiple_expr_block_right_stab() {
+        let code = r#"
+        quote do
+            "string" ->
+                a = 1
+                a
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Quote(Quote {
+            options: None,
+            body: Box::new(_do!(Expression::Stab(Stab {
+                left: vec![string!("string")],
+                right: vec![
+                    binary_operation!(id!("a"), BinaryOperator::Match, int!(1)),
+                    id!("a")
+                ],
+                guard: None,
+            }))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_guarded_stab() {
+        let code = r#"
+        quote do
+            var when is_integer(var) -> var + 1
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Quote(Quote {
+            options: None,
+            body: Box::new(_do!(Expression::Stab(Stab {
+                left: vec![id!("var")],
+                right: vec![binary_operation!(id!("var"), BinaryOperator::Plus, int!(1)),],
+                guard: Some(Box::new(call!(id!("is_integer"), id!("var")))),
+            }))),
+        })]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_try_rescue() {
+        let code = r#"
+        try do
+            1 / 0
+        rescue
+            err -> {:error, err}
+        end
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Call(Call {
+            target: Box::new(id!("try")),
+            remote_callee: None,
+            do_block: Some(Do {
+                body: Box::new(binary_operation!(int!(1), BinaryOperator::Div, int!(0))),
+                optional_block: Some(OptionalBlock {
+                    block: Box::new(Expression::Stab(Stab {
+                        left: vec![id!("err")],
+                        right: vec![tuple!(atom!("error"), id!("err"))],
+                        guard: None,
+                    })),
+                    block_type: OptionalBlockType::Rescue,
+                }),
+            }),
+            arguments: vec![],
+        })]);
+
+        assert_eq!(result, target);
+    }
+}
 
 // TODO: support specs with guards for @specs
 // https://hexdocs.pm/elixir/typespecs.html#defining-a-specification
@@ -7168,14 +7222,8 @@ mod tests {
 // TODO: parse for with more forms and options (do is not necessarily on the end)
 // TODO: for site <- sites, do: {site.id, site.domain}, into: %{}
 //
-// TODO: parse for with filter clauses
-//
 // TODO: allow trailing commas in list, tuples, maps, bitstrings
-//
-// TODO: power operator **
 //
 // TODO: Math."++add++"(1, 2)
 //
 // TODO: parse bitstrings
-//
-// TODO: add stabs as an expression (a, b -> c, d)
