@@ -1,0 +1,1002 @@
+[
+    {
+        "Ranking": "1",
+        "Project Name": "[elixir](https://github.com/elixir-lang/elixir)",
+        "Stars": "24001",
+        "Forks": "3329",
+        "Language": "Elixir",
+        "Open Issues": "20",
+        "Description": "Elixir is a dynamic, functional language for building scalable and maintainable applications",
+        "Last Commit": "2024-07-06T21:17:20Z"
+    },
+    {
+        "Ranking": "2",
+        "Project Name": "[phoenix](https://github.com/phoenixframework/phoenix)",
+        "Stars": "20964",
+        "Forks": "2838",
+        "Language": "Elixir",
+        "Open Issues": "23",
+        "Description": "Peace of mind from prototype to production",
+        "Last Commit": "2024-07-06T19:00:12Z"
+    },
+    {
+        "Ranking": "3",
+        "Project Name": "[analytics](https://github.com/plausible/analytics)",
+        "Stars": "18992",
+        "Forks": "1020",
+        "Language": "Elixir",
+        "Open Issues": "20",
+        "Description": "Simple, open source, lightweight (< 1 KB) and privacy-friendly web analytics alternative to Google Analytics.",
+        "Last Commit": "2024-07-07T10:32:51Z"
+    },
+    {
+        "Ranking": "4",
+        "Project Name": "[awesome-elixir](https://github.com/h4cc/awesome-elixir)",
+        "Stars": "12487",
+        "Forks": "1167",
+        "Language": "Elixir",
+        "Open Issues": "1",
+        "Description": "A curated list of amazingly awesome Elixir and Erlang libraries, resources and shiny things. Updates:",
+        "Last Commit": "2024-06-27T09:50:44Z"
+    },
+    {
+        "Ranking": "5",
+        "Project Name": "[realtime](https://github.com/supabase/realtime)",
+        "Stars": "6579",
+        "Forks": "289",
+        "Language": "Elixir",
+        "Open Issues": "29",
+        "Description": "Broadcast, Presence, and Postgres Changes via WebSockets",
+        "Last Commit": "2024-07-05T15:38:19Z"
+    },
+    {
+        "Ranking": "6",
+        "Project Name": "[firezone](https://github.com/firezone/firezone)",
+        "Stars": "6456",
+        "Forks": "271",
+        "Language": "Elixir",
+        "Open Issues": "231",
+        "Description": "WireGuard®-based zero-trust access platform with OIDC auth, identity sync, and NAT traversal.",
+        "Last Commit": "2024-07-08T02:12:48Z"
+    },
+    {
+        "Ranking": "7",
+        "Project Name": "[ecto](https://github.com/elixir-ecto/ecto)",
+        "Stars": "6064",
+        "Forks": "1418",
+        "Language": "Elixir",
+        "Open Issues": "5",
+        "Description": "A toolkit for data mapping and language integrated query.",
+        "Last Commit": "2024-07-06T20:32:15Z"
+    },
+    {
+        "Ranking": "8",
+        "Project Name": "[phoenix_live_view](https://github.com/phoenixframework/phoenix_live_view)",
+        "Stars": "5984",
+        "Forks": "902",
+        "Language": "Elixir",
+        "Open Issues": "25",
+        "Description": "Rich, real-time user experiences with server-rendered HTML",
+        "Last Commit": "2024-07-06T13:13:03Z"
+    },
+    {
+        "Ranking": "9",
+        "Project Name": "[papercups](https://github.com/papercups-io/papercups)",
+        "Stars": "5704",
+        "Forks": "507",
+        "Language": "Elixir",
+        "Open Issues": "155",
+        "Description": "Open-source live customer chat",
+        "Last Commit": "2024-02-15T05:21:47Z"
+    },
+    {
+        "Ranking": "10",
+        "Project Name": "[teslamate](https://github.com/teslamate-org/teslamate)",
+        "Stars": "5560",
+        "Forks": "697",
+        "Language": "Elixir",
+        "Open Issues": "21",
+        "Description": "A self-hosted data logger for your Tesla  🚘",
+        "Last Commit": "2024-07-07T11:20:39Z"
+    },
+    {
+        "Ranking": "11",
+        "Project Name": "[electric](https://github.com/electric-sql/electric)",
+        "Stars": "5389",
+        "Forks": "123",
+        "Language": "Elixir",
+        "Open Issues": "51",
+        "Description": "Local-first sync layer for web and mobile apps. Build reactive, realtime, local-first apps directly on Postgres.",
+        "Last Commit": "2024-07-03T12:23:13Z"
+    },
+    {
+        "Ranking": "12",
+        "Project Name": "[credo](https://github.com/rrrene/credo)",
+        "Stars": "4883",
+        "Forks": "414",
+        "Language": "Elixir",
+        "Open Issues": "7",
+        "Description": "A static code analysis tool for the Elixir language with a focus on code consistency and teaching.",
+        "Last Commit": "2024-06-24T15:48:17Z"
+    },
+    {
+        "Ranking": "13",
+        "Project Name": "[livebook](https://github.com/livebook-dev/livebook)",
+        "Stars": "4631",
+        "Forks": "408",
+        "Language": "Elixir",
+        "Open Issues": "18",
+        "Description": "Automate code & data workflows with interactive Elixir notebooks",
+        "Last Commit": "2024-07-07T12:09:57Z"
+    },
+    {
+        "Ranking": "14",
+        "Project Name": "[elixir_style_guide](https://github.com/christopheradams/elixir_style_guide)",
+        "Stars": "4322",
+        "Forks": "300",
+        "Language": "Elixir",
+        "Open Issues": "8",
+        "Description": "A community driven style guide for Elixir",
+        "Last Commit": "2024-05-10T03:55:51Z"
+    },
+    {
+        "Ranking": "15",
+        "Project Name": "[absinthe](https://github.com/absinthe-graphql/absinthe)",
+        "Stars": "4247",
+        "Forks": "519",
+        "Language": "Elixir",
+        "Open Issues": "50",
+        "Description": "The GraphQL toolkit for Elixir",
+        "Last Commit": "2024-06-18T15:03:41Z"
+    },
+    {
+        "Ranking": "16",
+        "Project Name": "[guardian](https://github.com/ueberauth/guardian)",
+        "Stars": "3401",
+        "Forks": "381",
+        "Language": "Elixir",
+        "Open Issues": "1",
+        "Description": "Elixir Authentication",
+        "Last Commit": "2024-06-30T17:40:06Z"
+    },
+    {
+        "Ranking": "17",
+        "Project Name": "[blockscout](https://github.com/blockscout/blockscout)",
+        "Stars": "3326",
+        "Forks": "2264",
+        "Language": "Elixir",
+        "Open Issues": "349",
+        "Description": "Blockchain explorer for Ethereum based network and a tool for inspecting and analyzing EVM based blockchains.",
+        "Last Commit": "2024-07-07T05:14:53Z"
+    },
+    {
+        "Ranking": "18",
+        "Project Name": "[oban](https://github.com/sorentwo/oban)",
+        "Stars": "3167",
+        "Forks": "297",
+        "Language": "Elixir",
+        "Open Issues": "4",
+        "Description": "💎 Robust job processing in Elixir, backed by modern PostgreSQL and SQLite3",
+        "Last Commit": "2024-07-01T22:24:36Z"
+    },
+    {
+        "Ranking": "19",
+        "Project Name": "[30-days-of-elixir](https://github.com/seven1m/30-days-of-elixir)",
+        "Stars": "3026",
+        "Forks": "429",
+        "Language": "Elixir",
+        "Open Issues": "0",
+        "Description": "A walk through the Elixir language in 30 exercises.",
+        "Last Commit": "2022-04-13T18:14:27Z"
+    },
+    {
+        "Ranking": "20",
+        "Project Name": "[magnetissimo](https://github.com/sergiotapia/magnetissimo)",
+        "Stars": "2972",
+        "Forks": "186",
+        "Language": "Elixir",
+        "Open Issues": "8",
+        "Description": "Web application that indexes all popular torrent sites, and saves it to the local database.",
+        "Last Commit": "2024-01-19T02:02:21Z"
+    },
+    {
+        "Ranking": "21",
+        "Project Name": "[distillery](https://github.com/bitwalker/distillery)",
+        "Stars": "2958",
+        "Forks": "396",
+        "Language": "Elixir",
+        "Open Issues": "44",
+        "Description": "Simplify deployments in Elixir with OTP releases!",
+        "Last Commit": "2023-04-21T18:50:24Z"
+    },
+    {
+        "Ranking": "22",
+        "Project Name": "[plug](https://github.com/elixir-plug/plug)",
+        "Stars": "2797",
+        "Forks": "577",
+        "Language": "Elixir",
+        "Open Issues": "3",
+        "Description": "Compose web applications with functions",
+        "Last Commit": "2024-07-07T09:58:59Z"
+    },
+    {
+        "Ranking": "23",
+        "Project Name": "[changelog.com](https://github.com/thechangelog/changelog.com)",
+        "Stars": "2680",
+        "Forks": "245",
+        "Language": "Elixir",
+        "Open Issues": "7",
+        "Description": "Changelog is news and podcast for developers. This is our open source platform.",
+        "Last Commit": "2024-07-05T17:39:41Z"
+    },
+    {
+        "Ranking": "24",
+        "Project Name": "[nx](https://github.com/elixir-nx/nx)",
+        "Stars": "2545",
+        "Forks": "190",
+        "Language": "Elixir",
+        "Open Issues": "24",
+        "Description": "Multi-dimensional arrays (tensors) and numerical definitions for Elixir",
+        "Last Commit": "2024-07-04T18:21:19Z"
+    },
+    {
+        "Ranking": "25",
+        "Project Name": "[broadway](https://github.com/dashbitco/broadway)",
+        "Stars": "2348",
+        "Forks": "154",
+        "Language": "Elixir",
+        "Open Issues": "3",
+        "Description": "Concurrent and multi-stage data ingestion and data processing with Elixir",
+        "Last Commit": "2024-06-21T10:37:36Z"
+    },
+    {
+        "Ranking": "26",
+        "Project Name": "[quantum-core](https://github.com/quantum-elixir/quantum-core)",
+        "Stars": "2282",
+        "Forks": "148",
+        "Language": "Elixir",
+        "Open Issues": "9",
+        "Description": ":watch: Cron-like job scheduler for Elixir",
+        "Last Commit": "2024-07-06T21:40:17Z"
+    },
+    {
+        "Ranking": "27",
+        "Project Name": "[asciinema-server](https://github.com/asciinema/asciinema-server)",
+        "Stars": "2255",
+        "Forks": "262",
+        "Language": "Elixir",
+        "Open Issues": "5",
+        "Description": "Platform for hosting and sharing terminal session recordings",
+        "Last Commit": "2024-07-02T15:55:21Z"
+    },
+    {
+        "Ranking": "28",
+        "Project Name": "[httpoison](https://github.com/edgurgel/httpoison)",
+        "Stars": "2215",
+        "Forks": "339",
+        "Language": "Elixir",
+        "Open Issues": "30",
+        "Description": "Yet Another HTTP client for Elixir powered by hackney",
+        "Last Commit": "2024-07-01T09:45:50Z"
+    },
+    {
+        "Ranking": "29",
+        "Project Name": "[nerves](https://github.com/nerves-project/nerves)",
+        "Stars": "2191",
+        "Forks": "187",
+        "Language": "Elixir",
+        "Open Issues": "21",
+        "Description": "Craft and deploy bulletproof embedded software in Elixir",
+        "Last Commit": "2024-07-07T09:40:48Z"
+    },
+    {
+        "Ranking": "30",
+        "Project Name": "[elixir-koans](https://github.com/elixirkoans/elixir-koans)",
+        "Stars": "2156",
+        "Forks": "587",
+        "Language": "Elixir",
+        "Open Issues": "21",
+        "Description": "Elixir learning exercises",
+        "Last Commit": "2024-03-27T14:51:19Z"
+    },
+    {
+        "Ranking": "31",
+        "Project Name": "[floki](https://github.com/philss/floki)",
+        "Stars": "2028",
+        "Forks": "152",
+        "Language": "Elixir",
+        "Open Issues": "17",
+        "Description": "Floki is a simple HTML parser that enables search for nodes using CSS selectors.",
+        "Last Commit": "2024-07-01T21:42:05Z"
+    },
+    {
+        "Ranking": "32",
+        "Project Name": "[surface](https://github.com/surface-ui/surface)",
+        "Stars": "2020",
+        "Forks": "149",
+        "Language": "Elixir",
+        "Open Issues": "31",
+        "Description": "A server-side rendering component library for Phoenix",
+        "Last Commit": "2024-06-26T17:56:34Z"
+    },
+    {
+        "Ranking": "33",
+        "Project Name": "[poison](https://github.com/devinus/poison)",
+        "Stars": "2018",
+        "Forks": "215",
+        "Language": "Elixir",
+        "Open Issues": "24",
+        "Description": "An incredibly fast, pure Elixir JSON library",
+        "Last Commit": "2024-06-11T12:08:34Z"
+    },
+    {
+        "Ranking": "34",
+        "Project Name": "[tesla](https://github.com/elixir-tesla/tesla)",
+        "Stars": "1972",
+        "Forks": "339",
+        "Language": "Elixir",
+        "Open Issues": "26",
+        "Description": "The flexible HTTP client library for Elixir, with support for middleware and multiple adapters.",
+        "Last Commit": "2024-07-01T06:10:52Z"
+    },
+    {
+        "Ranking": "35",
+        "Project Name": "[phoenix_live_dashboard](https://github.com/phoenixframework/phoenix_live_dashboard)",
+        "Stars": "1953",
+        "Forks": "181",
+        "Language": "Elixir",
+        "Open Issues": "10",
+        "Description": "Realtime dashboard with metrics, request logging, plus storage, OS and VM insights",
+        "Last Commit": "2024-06-25T13:07:39Z"
+    },
+    {
+        "Ranking": "36",
+        "Project Name": "[scenic](https://github.com/ScenicFramework/scenic)",
+        "Stars": "1944",
+        "Forks": "131",
+        "Language": "Elixir",
+        "Open Issues": "23",
+        "Description": "Core Scenic library",
+        "Last Commit": "2024-06-25T06:30:27Z"
+    },
+    {
+        "Ranking": "37",
+        "Project Name": "[libcluster](https://github.com/bitwalker/libcluster)",
+        "Stars": "1908",
+        "Forks": "184",
+        "Language": "Elixir",
+        "Open Issues": "11",
+        "Description": "Automatic cluster formation/healing for Elixir applications",
+        "Last Commit": "2024-06-18T14:53:42Z"
+    },
+    {
+        "Ranking": "38",
+        "Project Name": "[bamboo](https://github.com/beam-community/bamboo)",
+        "Stars": "1901",
+        "Forks": "343",
+        "Language": "Elixir",
+        "Open Issues": "32",
+        "Description": "Testable, composable, and adapter based Elixir email library for devs that love piping.",
+        "Last Commit": "2024-06-27T15:54:52Z"
+    },
+    {
+        "Ranking": "39",
+        "Project Name": "[ex_machina](https://github.com/beam-community/ex_machina)",
+        "Stars": "1890",
+        "Forks": "145",
+        "Language": "Elixir",
+        "Open Issues": "5",
+        "Description": "Create test data for Elixir applications",
+        "Last Commit": "2024-07-04T13:00:45Z"
+    },
+    {
+        "Ranking": "40",
+        "Project Name": "[commanded](https://github.com/commanded/commanded)",
+        "Stars": "1811",
+        "Forks": "239",
+        "Language": "Elixir",
+        "Open Issues": "69",
+        "Description": "Use Commanded to build Elixir CQRS/ES applications",
+        "Last Commit": "2024-07-04T15:19:06Z"
+    },
+    {
+        "Ranking": "41",
+        "Project Name": "[timex](https://github.com/bitwalker/timex)",
+        "Stars": "1729",
+        "Forks": "370",
+        "Language": "Elixir",
+        "Open Issues": "39",
+        "Description": "A complete date/time library for Elixir projects.",
+        "Last Commit": "2024-06-13T05:09:02Z"
+    },
+    {
+        "Ranking": "42",
+        "Project Name": "[manifold](https://github.com/discord/manifold)",
+        "Stars": "1723",
+        "Forks": "64",
+        "Language": "Elixir",
+        "Open Issues": "1",
+        "Description": "Fast batch message passing between nodes for Erlang/Elixir.",
+        "Last Commit": "2023-04-11T10:23:38Z"
+    },
+    {
+        "Ranking": "43",
+        "Project Name": "[dialyxir](https://github.com/jeremyjh/dialyxir)",
+        "Stars": "1672",
+        "Forks": "141",
+        "Language": "Elixir",
+        "Open Issues": "64",
+        "Description": "Mix tasks to simplify use of Dialyzer in Elixir projects.",
+        "Last Commit": "2024-06-19T01:38:37Z"
+    },
+    {
+        "Ranking": "44",
+        "Project Name": "[supavisor](https://github.com/supabase/supavisor)",
+        "Stars": "1645",
+        "Forks": "54",
+        "Language": "Elixir",
+        "Open Issues": "35",
+        "Description": "A cloud-native, multi-tenant Postgres connection pooler.",
+        "Last Commit": "2024-07-07T21:25:27Z"
+    },
+    {
+        "Ranking": "45",
+        "Project Name": "[sobelow](https://github.com/nccgroup/sobelow)",
+        "Stars": "1640",
+        "Forks": "92",
+        "Language": "Elixir",
+        "Open Issues": "25",
+        "Description": "Security-focused static analysis for the Phoenix Framework",
+        "Last Commit": "2024-05-19T17:56:39Z"
+    },
+    {
+        "Ranking": "46",
+        "Project Name": "[wallaby](https://github.com/elixir-wallaby/wallaby)",
+        "Stars": "1626",
+        "Forks": "192",
+        "Language": "Elixir",
+        "Open Issues": "31",
+        "Description": "Concurrent browser tests for your Elixir web apps.",
+        "Last Commit": "2024-06-10T20:59:21Z"
+    },
+    {
+        "Ranking": "47",
+        "Project Name": "[bandit](https://github.com/mtrudel/bandit)",
+        "Stars": "1602",
+        "Forks": "77",
+        "Language": "Elixir",
+        "Open Issues": "6",
+        "Description": "Bandit is a pure Elixir HTTP server for Plug & WebSock applications",
+        "Last Commit": "2024-06-25T02:04:32Z"
+    },
+    {
+        "Ranking": "48",
+        "Project Name": "[learn-elixir](https://github.com/dwyl/learn-elixir)",
+        "Stars": "1597",
+        "Forks": "107",
+        "Language": "Elixir",
+        "Open Issues": "119",
+        "Description": ":droplet: Learn the Elixir programming language to build functional, fast, scalable and maintainable web applications!",
+        "Last Commit": "2024-01-06T04:18:34Z"
+    },
+    {
+        "Ranking": "49",
+        "Project Name": "[sorted_set_nif](https://github.com/discord/sorted_set_nif)",
+        "Stars": "1589",
+        "Forks": "91",
+        "Language": "Elixir",
+        "Open Issues": "7",
+        "Description": "Elixir SortedSet backed by a Rust-based NIF",
+        "Last Commit": "2022-04-20T05:04:15Z"
+    },
+    {
+        "Ranking": "50",
+        "Project Name": "[elixir-companies](https://github.com/beam-community/elixir-companies)",
+        "Stars": "1587",
+        "Forks": "362",
+        "Language": "Elixir",
+        "Open Issues": "7",
+        "Description": "A list of companies currently using Elixir in production.",
+        "Last Commit": "2024-06-25T00:31:47Z"
+    },
+    {
+        "Ranking": "51",
+        "Project Name": "[ueberauth](https://github.com/ueberauth/ueberauth)",
+        "Stars": "1579",
+        "Forks": "120",
+        "Language": "Elixir",
+        "Open Issues": "24",
+        "Description": "An Elixir Authentication System for Plug-based Web Applications",
+        "Last Commit": "2024-06-24T15:01:02Z"
+    },
+    {
+        "Ranking": "52",
+        "Project Name": "[pow](https://github.com/pow-auth/pow)",
+        "Stars": "1577",
+        "Forks": "152",
+        "Language": "Elixir",
+        "Open Issues": "56",
+        "Description": "Robust, modular, and extendable user authentication system",
+        "Last Commit": "2024-04-11T11:49:50Z"
+    },
+    {
+        "Ranking": "53",
+        "Project Name": "[jason](https://github.com/michalmuskala/jason)",
+        "Stars": "1576",
+        "Forks": "168",
+        "Language": "Elixir",
+        "Open Issues": "12",
+        "Description": "A blazing fast JSON parser and generator in pure Elixir.",
+        "Last Commit": "2024-06-29T16:12:38Z"
+    },
+    {
+        "Ranking": "54",
+        "Project Name": "[elixirscript](https://github.com/elixirscript/elixirscript)",
+        "Stars": "1562",
+        "Forks": "66",
+        "Language": "Elixir",
+        "Open Issues": "19",
+        "Description": "Converts Elixir to JavaScript",
+        "Last Commit": "2019-08-20T14:46:14Z"
+    },
+    {
+        "Ranking": "55",
+        "Project Name": "[bors-ng](https://github.com/bors-ng/bors-ng)",
+        "Stars": "1517",
+        "Forks": "178",
+        "Language": "Elixir",
+        "Open Issues": "168",
+        "Description": "👁 A merge bot for GitHub Pull Requests",
+        "Last Commit": "2024-04-04T12:24:44Z"
+    },
+    {
+        "Ranking": "56",
+        "Project Name": "[cachex](https://github.com/whitfin/cachex)",
+        "Stars": "1500",
+        "Forks": "97",
+        "Language": "Elixir",
+        "Open Issues": "6",
+        "Description": "A powerful caching library for Elixir with support for transactions, fallbacks and expirations",
+        "Last Commit": "2024-06-12T15:09:10Z"
+    },
+    {
+        "Ranking": "57",
+        "Project Name": "[flow](https://github.com/dashbitco/flow)",
+        "Stars": "1497",
+        "Forks": "88",
+        "Language": "Elixir",
+        "Open Issues": "0",
+        "Description": "Computational parallel flows on top of GenStage",
+        "Last Commit": "2023-06-29T07:26:05Z"
+    },
+    {
+        "Ranking": "58",
+        "Project Name": "[axon](https://github.com/elixir-nx/axon)",
+        "Stars": "1484",
+        "Forks": "99",
+        "Language": "Elixir",
+        "Open Issues": "20",
+        "Description": "Nx-powered Neural Networks",
+        "Last Commit": "2024-06-12T13:53:17Z"
+    },
+    {
+        "Ranking": "59",
+        "Project Name": "[exq](https://github.com/akira/exq)",
+        "Stars": "1482",
+        "Forks": "181",
+        "Language": "Elixir",
+        "Open Issues": "25",
+        "Description": "Job processing library for Elixir  - compatible with Resque / Sidekiq",
+        "Last Commit": "2024-07-07T13:31:29Z"
+    },
+    {
+        "Ranking": "60",
+        "Project Name": "[gen_stage](https://github.com/elixir-lang/gen_stage)",
+        "Stars": "1476",
+        "Forks": "192",
+        "Language": "Elixir",
+        "Open Issues": "0",
+        "Description": "Producer and consumer actors with back-pressure for Elixir",
+        "Last Commit": "2024-06-19T17:06:54Z"
+    },
+    {
+        "Ranking": "61",
+        "Project Name": "[desktop](https://github.com/elixir-desktop/desktop)",
+        "Stars": "1468",
+        "Forks": "50",
+        "Language": "Elixir",
+        "Open Issues": "5",
+        "Description": "Building native-like Elixir apps for Windows, MacOS, Linux, iOS and Android using Phoenix LiveView!",
+        "Last Commit": "2024-05-28T22:08:46Z"
+    },
+    {
+        "Ranking": "62",
+        "Project Name": "[ash](https://github.com/ash-project/ash)",
+        "Stars": "1456",
+        "Forks": "185",
+        "Language": "Elixir",
+        "Open Issues": "59",
+        "Description": "A declarative, extensible framework for building Elixir applications.",
+        "Last Commit": "2024-07-07T20:03:56Z"
+    },
+    {
+        "Ranking": "63",
+        "Project Name": "[Elixir-Code-Smells](https://github.com/lucasvegi/Elixir-Code-Smells)",
+        "Stars": "1436",
+        "Forks": "48",
+        "Language": "Elixir",
+        "Open Issues": "2",
+        "Description": "Catalog of Elixir-specific code smells",
+        "Last Commit": "2023-12-31T00:27:43Z"
+    },
+    {
+        "Ranking": "64",
+        "Project Name": "[swoosh](https://github.com/swoosh/swoosh)",
+        "Stars": "1434",
+        "Forks": "211",
+        "Language": "Elixir",
+        "Open Issues": "15",
+        "Description": "Compose, deliver and test your emails easily in Elixir",
+        "Last Commit": "2024-07-07T14:36:40Z"
+    },
+    {
+        "Ranking": "65",
+        "Project Name": "[elixir-ls](https://github.com/elixir-lsp/elixir-ls)",
+        "Stars": "1424",
+        "Forks": "189",
+        "Language": "Elixir",
+        "Open Issues": "74",
+        "Description": "A frontend-independent IDE \"smartness\" server for Elixir. Implements the \"Language Server Protocol\" standard and provides debugger support via the \"Debug Adapter Protocol\"",
+        "Last Commit": "2024-07-06T07:26:40Z"
+    },
+    {
+        "Ranking": "66",
+        "Project Name": "[ex_doc](https://github.com/elixir-lang/ex_doc)",
+        "Stars": "1418",
+        "Forks": "322",
+        "Language": "Elixir",
+        "Open Issues": "11",
+        "Description": "ExDoc produces HTML and EPUB documentation for Elixir projects",
+        "Last Commit": "2024-07-07T10:18:30Z"
+    },
+    {
+        "Ranking": "67",
+        "Project Name": "[benchee](https://github.com/bencheeorg/benchee)",
+        "Stars": "1390",
+        "Forks": "64",
+        "Language": "Elixir",
+        "Open Issues": "21",
+        "Description": "Easy and extensible benchmarking in Elixir providing you with lots of statistics!",
+        "Last Commit": "2024-07-07T17:20:49Z"
+    },
+    {
+        "Ranking": "68",
+        "Project Name": "[mint](https://github.com/elixir-mint/mint)",
+        "Stars": "1359",
+        "Forks": "106",
+        "Language": "Elixir",
+        "Open Issues": "4",
+        "Description": "Functional HTTP client for Elixir with support for HTTP/1 and HTTP/2 🌱",
+        "Last Commit": "2024-07-04T06:54:59Z"
+    },
+    {
+        "Ranking": "69",
+        "Project Name": "[grpc](https://github.com/elixir-grpc/grpc)",
+        "Stars": "1357",
+        "Forks": "209",
+        "Language": "Elixir",
+        "Open Issues": "36",
+        "Description": "An Elixir implementation of gRPC",
+        "Last Commit": "2024-07-07T20:14:18Z"
+    },
+    {
+        "Ranking": "70",
+        "Project Name": "[hound](https://github.com/HashNuke/hound)",
+        "Stars": "1352",
+        "Forks": "144",
+        "Language": "Elixir",
+        "Open Issues": "70",
+        "Description": "Elixir library for writing integration tests and browser automation",
+        "Last Commit": "2024-06-02T20:31:38Z"
+    },
+    {
+        "Ranking": "71",
+        "Project Name": "[maru](https://github.com/elixir-maru/maru)",
+        "Stars": "1316",
+        "Forks": "83",
+        "Language": "Elixir",
+        "Open Issues": "15",
+        "Description": "Elixir RESTful Framework",
+        "Last Commit": "2019-09-13T14:08:13Z"
+    },
+    {
+        "Ranking": "72",
+        "Project Name": "[mox](https://github.com/dashbitco/mox)",
+        "Stars": "1314",
+        "Forks": "75",
+        "Language": "Elixir",
+        "Open Issues": "3",
+        "Description": "Mocks and explicit contracts in Elixir",
+        "Last Commit": "2024-06-25T15:53:09Z"
+    },
+    {
+        "Ranking": "73",
+        "Project Name": "[kaffy](https://github.com/aesmail/kaffy)",
+        "Stars": "1300",
+        "Forks": "153",
+        "Language": "Elixir",
+        "Open Issues": "49",
+        "Description": "Powerfully simple admin package for phoenix applications",
+        "Last Commit": "2024-07-03T15:37:14Z"
+    },
+    {
+        "Ranking": "74",
+        "Project Name": "[comeonin](https://github.com/riverrun/comeonin)",
+        "Stars": "1285",
+        "Forks": "64",
+        "Language": "Elixir",
+        "Open Issues": "3",
+        "Description": "Password hashing specification for the Elixir programming language",
+        "Last Commit": "2023-08-26T01:32:51Z"
+    },
+    {
+        "Ranking": "75",
+        "Project Name": "[horde](https://github.com/derekkraan/horde)",
+        "Stars": "1275",
+        "Forks": "101",
+        "Language": "Elixir",
+        "Open Issues": "26",
+        "Description": "Horde is a distributed Supervisor and Registry backed by DeltaCrdt",
+        "Last Commit": "2024-06-27T20:05:13Z"
+    },
+    {
+        "Ranking": "76",
+        "Project Name": "[bumblebee](https://github.com/elixir-nx/bumblebee)",
+        "Stars": "1266",
+        "Forks": "90",
+        "Language": "Elixir",
+        "Open Issues": "21",
+        "Description": "Pre-trained Neural Network models in Axon (+ 🤗 Models integration)",
+        "Last Commit": "2024-07-04T05:46:22Z"
+    },
+    {
+        "Ranking": "77",
+        "Project Name": "[coherence](https://github.com/smpallen99/coherence)",
+        "Stars": "1260",
+        "Forks": "222",
+        "Language": "Elixir",
+        "Open Issues": "68",
+        "Description": "Coherence is a full featured, configurable authentication system for Phoenix",
+        "Last Commit": "2024-01-16T06:26:09Z"
+    },
+    {
+        "Ranking": "78",
+        "Project Name": "[ex_aws](https://github.com/ex-aws/ex_aws)",
+        "Stars": "1258",
+        "Forks": "521",
+        "Language": "Elixir",
+        "Open Issues": "56",
+        "Description": "A flexible, easy to use set of clients AWS APIs for Elixir",
+        "Last Commit": "2024-07-01T14:56:03Z"
+    },
+    {
+        "Ranking": "79",
+        "Project Name": "[keila](https://github.com/pentacent/keila)",
+        "Stars": "1250",
+        "Forks": "61",
+        "Language": "Elixir",
+        "Open Issues": "56",
+        "Description": "Open Source Newsletter Tool.",
+        "Last Commit": "2024-07-05T20:59:04Z"
+    },
+    {
+        "Ranking": "80",
+        "Project Name": "[fast-elixir](https://github.com/devonestes/fast-elixir)",
+        "Stars": "1250",
+        "Forks": "39",
+        "Language": "Elixir",
+        "Open Issues": "3",
+        "Description": ":dash: Writing Fast Elixir :heart_eyes: -- Collect Common Elixir idioms.",
+        "Last Commit": "2023-11-08T17:04:23Z"
+    },
+    {
+        "Ranking": "81",
+        "Project Name": "[zoonk](https://github.com/zoonk/zoonk)",
+        "Stars": "1246",
+        "Forks": "70",
+        "Language": "Elixir",
+        "Open Issues": "39",
+        "Description": "Platform for creating interactive courses.",
+        "Last Commit": "2024-07-01T19:50:12Z"
+    },
+    {
+        "Ranking": "82",
+        "Project Name": "[standard-webhooks](https://github.com/standard-webhooks/standard-webhooks)",
+        "Stars": "1238",
+        "Forks": "29",
+        "Language": "Elixir",
+        "Open Issues": "23",
+        "Description": "The Standard Webhooks specification",
+        "Last Commit": "2024-07-03T08:05:15Z"
+    },
+    {
+        "Ranking": "83",
+        "Project Name": "[finch](https://github.com/sneako/finch)",
+        "Stars": "1231",
+        "Forks": "115",
+        "Language": "Elixir",
+        "Open Issues": "16",
+        "Description": "Elixir HTTP client, focused on performance",
+        "Last Commit": "2024-06-17T07:50:38Z"
+    },
+    {
+        "Ranking": "84",
+        "Project Name": "[membrane_core](https://github.com/membraneframework/membrane_core)",
+        "Stars": "1222",
+        "Forks": "35",
+        "Language": "Elixir",
+        "Open Issues": "30",
+        "Description": "The core of the Membrane Framework, advanced multimedia processing framework",
+        "Last Commit": "2024-07-03T10:43:08Z"
+    },
+    {
+        "Ranking": "85",
+        "Project Name": "[nebulex](https://github.com/cabol/nebulex)",
+        "Stars": "1215",
+        "Forks": "72",
+        "Language": "Elixir",
+        "Open Issues": "8",
+        "Description": "In-memory and distributed caching toolkit for Elixir.",
+        "Last Commit": "2024-07-07T14:41:35Z"
+    },
+    {
+        "Ranking": "86",
+        "Project Name": "[live_beats](https://github.com/fly-apps/live_beats)",
+        "Stars": "1209",
+        "Forks": "155",
+        "Language": "Elixir",
+        "Open Issues": "5",
+        "Description": "None",
+        "Last Commit": "2024-06-20T21:32:01Z"
+    },
+    {
+        "Ranking": "87",
+        "Project Name": "[midarr-server](https://github.com/midarrlabs/midarr-server)",
+        "Stars": "1203",
+        "Forks": "36",
+        "Language": "Elixir",
+        "Open Issues": "1",
+        "Description": "🔥Midarr, the minimal lightweight media server.",
+        "Last Commit": "2024-07-07T05:29:33Z"
+    },
+    {
+        "Ranking": "88",
+        "Project Name": "[ex_admin](https://github.com/smpallen99/ex_admin)",
+        "Stars": "1200",
+        "Forks": "276",
+        "Language": "Elixir",
+        "Open Issues": "125",
+        "Description": "ExAdmin is an auto administration package for Elixir and the Phoenix Framework",
+        "Last Commit": "2020-02-03T09:29:34Z"
+    },
+    {
+        "Ranking": "89",
+        "Project Name": "[swarm](https://github.com/bitwalker/swarm)",
+        "Stars": "1188",
+        "Forks": "101",
+        "Language": "Elixir",
+        "Open Issues": "39",
+        "Description": "Easy clustering, registration, and distribution of worker processes for Erlang/Elixir",
+        "Last Commit": "2022-06-22T11:00:39Z"
+    },
+    {
+        "Ranking": "90",
+        "Project Name": "[witchcraft](https://github.com/witchcrafters/witchcraft)",
+        "Stars": "1184",
+        "Forks": "57",
+        "Language": "Elixir",
+        "Open Issues": "21",
+        "Description": "Monads and other dark magic for Elixir",
+        "Last Commit": "2023-08-28T14:32:22Z"
+    },
+    {
+        "Ranking": "91",
+        "Project Name": "[arc](https://github.com/stavro/arc)",
+        "Stars": "1161",
+        "Forks": "210",
+        "Language": "Elixir",
+        "Open Issues": "71",
+        "Description": ":paperclip: Flexible file upload and attachment library for Elixir",
+        "Last Commit": "2024-04-02T01:42:05Z"
+    },
+    {
+        "Ranking": "92",
+        "Project Name": "[fastglobal](https://github.com/discord/fastglobal)",
+        "Stars": "1134",
+        "Forks": "81",
+        "Language": "Elixir",
+        "Open Issues": "8",
+        "Description": "Fast no copy globals for Elixir & Erlang.",
+        "Last Commit": "2023-03-09T21:12:23Z"
+    },
+    {
+        "Ranking": "93",
+        "Project Name": "[elixir-boilerplate](https://github.com/mirego/elixir-boilerplate)",
+        "Stars": "1111",
+        "Forks": "83",
+        "Language": "Elixir",
+        "Open Issues": "1",
+        "Description": "⚗ The stable base upon which we build our Elixir projects at Mirego.",
+        "Last Commit": "2024-06-24T19:54:52Z"
+    },
+    {
+        "Ranking": "94",
+        "Project Name": "[dynamo](https://github.com/dynamo/dynamo)",
+        "Stars": "1109",
+        "Forks": "154",
+        "Language": "Elixir",
+        "Open Issues": "14",
+        "Description": "Run, Dynamo, Run!",
+        "Last Commit": "2017-04-12T00:41:12Z"
+    },
+    {
+        "Ranking": "95",
+        "Project Name": "[ElixirCode](https://github.com/StephenGrider/ElixirCode)",
+        "Stars": "1093",
+        "Forks": "350",
+        "Language": "Elixir",
+        "Open Issues": "1",
+        "Description": "Reference Repo for an Elixir course on Udemy.com",
+        "Last Commit": "2019-10-03T04:02:20Z"
+    },
+    {
+        "Ranking": "96",
+        "Project Name": "[postgrex](https://github.com/elixir-ecto/postgrex)",
+        "Stars": "1077",
+        "Forks": "268",
+        "Language": "Elixir",
+        "Open Issues": "3",
+        "Description": "PostgreSQL driver for Elixir",
+        "Last Commit": "2024-07-06T14:07:07Z"
+    },
+    {
+        "Ranking": "97",
+        "Project Name": "[redix](https://github.com/whatyouhide/redix)",
+        "Stars": "1074",
+        "Forks": "120",
+        "Language": "Elixir",
+        "Open Issues": "0",
+        "Description": "Fast, pipelined, resilient Redis driver for Elixir. 🛍",
+        "Last Commit": "2024-06-12T11:07:55Z"
+    },
+    {
+        "Ranking": "98",
+        "Project Name": "[torch](https://github.com/mojotech/torch)",
+        "Stars": "1071",
+        "Forks": "79",
+        "Language": "Elixir",
+        "Open Issues": "5",
+        "Description": "A rapid admin generator for Elixir & Phoenix",
+        "Last Commit": "2024-07-01T15:44:03Z"
+    },
+    {
+        "Ranking": "99",
+        "Project Name": "[explorer](https://github.com/elixir-explorer/explorer)",
+        "Stars": "1049",
+        "Forks": "112",
+        "Language": "Elixir",
+        "Open Issues": "19",
+        "Description": "Series (one-dimensional) and dataframes (two-dimensional) for fast and elegant data exploration in Elixir",
+        "Last Commit": "2024-07-08T00:49:49Z"
+    },
+    {
+        "Ranking": "100",
+        "Project Name": "[faker](https://github.com/elixirs/faker)",
+        "Stars": "1044",
+        "Forks": "213",
+        "Language": "Elixir",
+        "Open Issues": "18",
+        "Description": "Faker is a pure Elixir library for generating fake data.",
+        "Last Commit": "2024-06-26T07:36:04Z"
+    }
+]

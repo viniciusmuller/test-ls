@@ -2,3 +2,4 @@
 result
 # Rust build
 target
+benches/test-repos

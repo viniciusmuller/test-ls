@@ -15,12 +15,6 @@ impl Eq for Float {}
 type Atom = String;
 type Identifier = String;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct Parameter {
-    expression: Expression,
-    default: Option<Expression>,
-}
-
 // TODO: move is_private field to Defp variation of the expression enum
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Function {
@@ -28,14 +22,14 @@ struct Function {
     is_private: bool,
     body: Box<Expression>,
     guard_expression: Option<Box<Expression>>,
-    parameters: Vec<Parameter>,
+    parameters: Vec<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct FunctionHead {
     name: Identifier,
     is_private: bool,
-    parameters: Vec<Parameter>,
+    parameters: Vec<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -43,7 +37,7 @@ struct CustomGuard {
     name: Identifier,
     // TODO: body: Guard
     body: Box<Expression>,
-    parameters: Vec<Parameter>,
+    parameters: Vec<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -58,7 +52,7 @@ struct Macro {
     is_private: bool,
     body: Box<Expression>,
     guard_expression: Option<Box<Expression>>,
-    parameters: Vec<Parameter>,
+    parameters: Vec<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -361,12 +355,6 @@ struct Use {
 struct Import {
     target: Vec<Atom>,
     options: Option<Box<Expression>>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct Default {
-    left: Box<Expression>,
-    right: Box<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1025,7 +1013,7 @@ fn try_parse_macro_definition(state: &PState, offset: usize) -> ParserResult<Exp
 fn try_parse_function_guard(
     state: &PState,
     offset: usize,
-) -> ParserResult<(Expression, Vec<Parameter>, Identifier)> {
+) -> ParserResult<(Expression, Vec<Expression>, Identifier)> {
     let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
     let (_, offset) = try_parse_grammar_name(state, offset, "call")?;
     let (function_name, offset) = try_parse_identifier(state, offset)?;
@@ -1043,7 +1031,7 @@ fn try_parse_function_guard(
     Ok(((guard_expression, parameters, function_name), offset))
 }
 
-fn try_parse_parameters(state: &PState, offset: usize) -> ParserResult<Vec<Parameter>> {
+fn try_parse_parameters(state: &PState, offset: usize) -> ParserResult<Vec<Expression>> {
     let (_, offset) = try_parse_grammar_name(state, offset, "arguments")?;
 
     let (offset, has_parenthesis) = match try_parse_grammar_name(state, offset, "(") {
@@ -1069,37 +1057,11 @@ fn try_parse_parameters(state: &PState, offset: usize) -> ParserResult<Vec<Param
     Ok((parameters, offset))
 }
 
-fn try_parse_parameter(state: &PState, offset: usize) -> ParserResult<Parameter> {
-    match try_parse_parameter_default_value(state, offset) {
-        Ok(result) => Ok(result),
-        Err(_) => try_parse_expression(state, offset)
-            .or_else(|_| {
-                try_parse_keyword_expressions(state, offset)
-                    .map(|(list, offset)| (Expression::List(list), offset))
-            })
-            .map(|(expr, offset)| {
-                let expr = Parameter {
-                    expression: expr,
-                    default: None,
-                };
-
-                (expr, offset)
-            }),
-    }
-}
-
-fn try_parse_parameter_default_value(state: &PState, offset: usize) -> ParserResult<Parameter> {
-    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
-    let (expression, offset) = try_parse_expression(state, offset)?;
-    let (_, offset) = try_parse_grammar_name(state, offset, r#"\\"#)?;
-    let (default, offset) = try_parse_expression(state, offset)?;
-
-    let parameter = Parameter {
-        expression,
-        default: Some(default),
-    };
-
-    Ok((parameter, offset))
+fn try_parse_parameter(state: &PState, offset: usize) -> ParserResult<Expression> {
+    try_parse_expression(state, offset).or_else(|_| {
+        try_parse_keyword_expressions(state, offset)
+            .map(|(list, offset)| (Expression::List(list), offset))
+    })
 }
 
 fn try_parse_grammar_name<'a>(
@@ -2492,16 +2454,13 @@ fn try_parse_integer(state: &PState, offset: usize) -> Result<(usize, usize), Pa
     let integer_text = integer_text.replace('_', "");
 
     let result = if let Some(stripped) = integer_text.strip_prefix("0b") {
-        usize::from_str_radix(stripped, 2).unwrap()
+        usize::from_str_radix(stripped, 2).unwrap_or(0)
     } else if let Some(stripped) = integer_text.strip_prefix("0x") {
-        usize::from_str_radix(stripped, 16).unwrap()
+        usize::from_str_radix(stripped, 16).unwrap_or(0)
     } else if let Some(stripped) = integer_text.strip_prefix("0o") {
-        usize::from_str_radix(stripped, 8).unwrap()
+        usize::from_str_radix(stripped, 8).unwrap_or(0)
     } else {
-        integer_text.parse::<usize>().unwrap_or_else(|err| {
-            dbg!(err, integer_text);
-            0
-        })
+        integer_text.parse::<usize>().unwrap_or(0)
     };
 
     Ok((result, offset))
@@ -3730,10 +3689,7 @@ mod tests {
                 )
             ))),
             guard_expression: None,
-            parameters: vec![Parameter {
-                expression: list!(tuple!(atom!("do"), id!("block"))),
-                default: None,
-            }],
+            parameters: vec![list!(tuple!(atom!("do"), id!("block")))],
         })]);
 
         assert_eq!(result, target);
@@ -3814,10 +3770,11 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: "func".to_string(),
             is_private: false,
-            parameters: vec![Parameter {
-                expression: id!("a"),
-                default: Some(int!(10)),
-            }],
+            parameters: vec![binary_operation!(
+                id!("a"),
+                BinaryOperator::Default,
+                int!(10)
+            )],
             body: Box::new(_do!(int!(10))),
             guard_expression: None,
         })]);
@@ -3853,13 +3810,10 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: "func".to_string(),
             is_private: false,
-            parameters: vec![Parameter {
-                expression: Expression::Map(Map {
-                    entries: vec![(atom!("a"), id!("value"))],
-                    updated: None,
-                }),
-                default: None,
-            }],
+            parameters: vec![Expression::Map(Map {
+                entries: vec![(atom!("a"), id!("value"))],
+                updated: None,
+            })],
             body: Box::new(_do!(id!("value"))),
             guard_expression: None,
         })]);
@@ -3878,10 +3832,7 @@ mod tests {
         let target = Block(vec![Expression::FunctionDef(Function {
             name: "guarded".to_string(),
             is_private: false,
-            parameters: vec![Parameter {
-                expression: id!("a"),
-                default: None,
-            }],
+            parameters: vec![id!("a")],
             body: Box::new(_do!(binary_operation!(
                 id!("a"),
                 BinaryOperator::Equal,
@@ -3929,20 +3880,7 @@ mod tests {
             name: "func".to_string(),
             is_private: false,
             body: Box::new(_do!(Block(vec![]))),
-            parameters: vec![
-                Parameter {
-                    expression: id!("a"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("b"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("c"),
-                    default: None,
-                },
-            ],
+            parameters: vec![id!("a"), id!("b"), id!("c")],
             guard_expression: None,
         })]);
 
@@ -3970,20 +3908,7 @@ mod tests {
                 BinaryOperator::Plus,
                 id!("b")
             ))),
-            parameters: vec![
-                Parameter {
-                    expression: id!("a"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("b"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("c"),
-                    default: None,
-                },
-            ],
+            parameters: vec![id!("a"), id!("b"), id!("c")],
             guard_expression: None,
         })]);
 
@@ -5719,20 +5644,7 @@ mod tests {
                 id!("b")
             ))),
             guard_expression: None,
-            parameters: vec![
-                Parameter {
-                    expression: id!("a"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("b"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("c"),
-                    default: None,
-                },
-            ],
+            parameters: vec![id!("a"), id!("b"), id!("c")],
         })]);
 
         assert_eq!(result, target);
@@ -5761,20 +5673,7 @@ mod tests {
                 id!("b")
             ))),
             guard_expression: None,
-            parameters: vec![
-                Parameter {
-                    expression: id!("a"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("b"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("c"),
-                    default: None,
-                },
-            ],
+            parameters: vec![id!("a"), id!("b"), id!("c")],
         })]);
 
         assert_eq!(result, target);
@@ -5787,10 +5686,7 @@ mod tests {
             is_private: false,
             body: Box::new(_do!(bool!(true))),
             guard_expression: Some(Box::new(call!(id!("is_integer"), id!("x")))),
-            parameters: vec![Parameter {
-                expression: id!("x"),
-                default: None,
-            }],
+            parameters: vec![id!("x")],
         })]);
 
         let code = r#"
@@ -5821,10 +5717,11 @@ mod tests {
         let target = Block(vec![Expression::MacroDef(Macro {
             name: "macro".to_string(),
             is_private: true,
-            parameters: vec![Parameter {
-                expression: id!("a"),
-                default: Some(int!(10)),
-            }],
+            parameters: vec![binary_operation!(
+                id!("a"),
+                BinaryOperator::Default,
+                int!(10)
+            )],
             body: Box::new(_do!(int!(10))),
             guard_expression: None,
         })]);
@@ -7021,10 +6918,7 @@ mod tests {
                 BinaryOperator::StrictAnd,
                 binary_operation!(id!("status"), BinaryOperator::LessThan, int!(400))
             )),
-            parameters: vec![Parameter {
-                expression: id!("status"),
-                default: None,
-            }],
+            parameters: vec![id!("status")],
         })]);
 
         assert_eq!(result, target);
@@ -7043,10 +6937,7 @@ mod tests {
                 BinaryOperator::Equal,
                 int!(10)
             )),
-            parameters: vec![Parameter {
-                expression: id!("value"),
-                default: None,
-            }],
+            parameters: vec![id!("value")],
         })]);
 
         assert_eq!(result, target);
@@ -7062,18 +6953,9 @@ mod tests {
             name: "my_func".to_string(),
             is_private: false,
             parameters: vec![
-                Parameter {
-                    expression: id!("a"),
-                    default: None,
-                },
-                Parameter {
-                    expression: id!("b"),
-                    default: Some(nil!()),
-                },
-                Parameter {
-                    expression: id!("c"),
-                    default: Some(int!(10)),
-                },
+                id!("a"),
+                binary_operation!(id!("b"), BinaryOperator::Default, nil!()),
+                binary_operation!(id!("c"), BinaryOperator::Default, int!(10)),
             ],
         })]);
 
@@ -7247,6 +7129,21 @@ mod tests {
     }
 }
 
+// TODO: ... as macro argument (TODO: probably treat it as a identifier if not inside typespec)
+//       base_db_query()
+//      |> where([..., site], site.domain == ^domain)
+
+// TODO: support calls in types
+//   @type role() :: unquote(Enum.reduce(@roles, &{:|, [], [&1, &2]}))
+
+// TODO: failing to parse
+// # @spec export_queries(pos_integer,
+// #         extname: String.t(),
+// #         date_range: Date.Range.t(),
+// #         timezone: String.t()
+// #       ) ::
+// #         %{String.t() => Ecto.Query.t()}
+
 // TODO: support specs with guards for @specs
 // https://hexdocs.pm/elixir/typespecs.html#defining-a-specification
 // @spec function(arg) :: [arg] when arg: var
@@ -7263,4 +7160,3 @@ mod tests {
 // TODO: parse bitstrings
 //
 // TODO: fix nested kw list bug
-// TODO: refactor parameters to be just expressions
