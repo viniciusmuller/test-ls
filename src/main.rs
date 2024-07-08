@@ -531,7 +531,10 @@ fn get_tree(code: &str) -> Tree {
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    let now = Instant::now();
     let (mut successes, failures) = walkdir(&args[1]);
+    let total_elapsed = now.elapsed();
+
     successes.sort_by(|(_, e1), (_, e2)| e2.cmp(e1));
 
     for path in successes.iter().take(10) {
@@ -548,8 +551,7 @@ fn main() {
         successes.len()
     );
 
-    let total_time: Duration = successes.iter().map(|t| t.1).sum();
-    println!("Total reading + parsing time: {:.2?}", total_time);
+    println!("Total reading + parsing time: {:.2?}", total_elapsed);
 
     println!(
         "successes total size: {} bytes",
