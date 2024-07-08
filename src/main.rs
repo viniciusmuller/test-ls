@@ -548,6 +548,9 @@ fn main() {
         successes.len()
     );
 
+    let total_time: Duration = successes.iter().map(|t| t.1).sum();
+    println!("Total reading + parsing time: {:.2?}", total_time);
+
     println!(
         "successes total size: {} bytes",
         std::mem::size_of_val(&*successes)
@@ -572,17 +575,11 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
     use rayon::prelude::*;
 
     let results = file_paths
-        // .par_iter()
-        .iter()
+        .par_iter()
         .map(|path| {
             let now = Instant::now();
             let result = parse_file(path);
             let elapsed = now.elapsed();
-            println!(
-                "now parsing: {}, {:.2?}",
-                path.as_os_str().to_str().unwrap(),
-                elapsed
-            );
             (path, result, elapsed)
         })
         .collect::<Vec<_>>();
