@@ -203,6 +203,8 @@ enum BinaryOperator {
     GreaterThanOrEqual,
     // =
     Match,
+    // \\
+    Default,
     ///  Operators that are parsed and can be overriden by libraries.
     ///  &&&
     ///  <<<
@@ -359,6 +361,12 @@ struct Use {
 struct Import {
     target: Vec<Atom>,
     options: Option<Box<Expression>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct Default {
+    left: Box<Expression>,
+    right: Box<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -2986,6 +2994,7 @@ fn try_parse_binary_operator_node(state: &PState, offset: usize) -> ParserResult
         ">" => Ok((BinaryOperator::GreaterThan, offset + 1)),
         "<=" => Ok((BinaryOperator::LessThanOrEqual, offset + 1)),
         ">=" => Ok((BinaryOperator::GreaterThanOrEqual, offset + 1)),
+        r#"\\"# => Ok((BinaryOperator::Default, offset + 1)),
         unknown_operator => try_parse_custom_operator(&token, offset, unknown_operator)
             .map(|op| (BinaryOperator::Custom(op), offset + 1)),
     }
@@ -6948,7 +6957,11 @@ mod tests {
         let result = parse(&code).unwrap();
         let target = Block(vec![_type!(Typespec::Binding(
             Box::new(Typespec::LocalType("t".to_string(), vec![])),
-            Box::new(Typespec::RemoteType("uri_string".to_string(), "uri_string".to_string(), vec![]))
+            Box::new(Typespec::RemoteType(
+                "uri_string".to_string(),
+                "uri_string".to_string(),
+                vec![]
+            ))
         ))]);
 
         assert_eq!(result, target);
@@ -7195,15 +7208,40 @@ mod tests {
     }
 
     #[test]
-    fn parse_defdelegate() {
+    fn parse_call_keyword_list_args() {
         let code = r#"
         defdelegate size(cache_name \\ name()), to: Cache.Adapter
         "#;
         let result = parse(&code).unwrap();
-        let target = Block(vec![Expression::Guard(Guard {
-            left: Box::new(id!("a")),
-            right: Box::new(call!(id!("is_integer"), id!("a"))),
-        })]);
+        let target = Block(vec![
+            call!(
+                id!("defdelegate"),
+                call!(
+                    id!("size"),
+                    binary_operation!(
+                        id!("cache_name"),
+                        BinaryOperator::Default,
+                        call_no_args!(id!("name"))
+                    )
+                )
+            ),
+            list!(tuple!(atom!("to"), atom!("Cache.Adapter"))),
+        ]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_default_expression() {
+        let code = r#"
+        cache_name \\ "my_cache"
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![binary_operation!(
+            id!("cache_name"),
+            BinaryOperator::Default,
+            string!("my_cache")
+        )]);
 
         assert_eq!(result, target);
     }
@@ -7223,3 +7261,6 @@ mod tests {
 // TODO: Math."++add++"(1, 2)
 //
 // TODO: parse bitstrings
+//
+// TODO: fix nested kw list bug
+// TODO: refactor parameters to be just expressions
