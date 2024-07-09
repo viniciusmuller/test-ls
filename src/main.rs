@@ -25,13 +25,14 @@ fn main() {
 
         println!("Parsing {}", path.display());
 
-        // for path in &failures {
-        //     println!("failed to parsed {:?}", path);
-        // }
+        for path in &failures {
+            println!("failed to parse {:?}", path);
+        }
 
-        // for path in successes.iter().take(10) {
-        //     println!("succesfully parsed {:?}", path);
-        // }
+        println!("Top 10 slowest files to parse:");
+        for path in successes.iter().take(10) {
+            println!("{:?}", path);
+        }
 
         println!(
             "finished indexing: errors: {} successes: {}",
@@ -68,8 +69,9 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
     let results = file_paths
         .par_iter()
         .map(|path| {
+            let contents = fs::read_to_string(path).expect("Should have been able to read the file");
             let now = Instant::now();
-            let result = parse_file(path);
+            let result = parser::parse(&contents);
             let elapsed = now.elapsed();
             (path, result, elapsed)
         })
@@ -88,9 +90,4 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
         .collect();
 
     return (successes, failures);
-}
-
-fn parse_file(file_path: &Path) -> Result<parser::Expression, parser::ParseError> {
-    let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
-    parser::parse(&contents)
 }
