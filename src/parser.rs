@@ -1,8 +1,8 @@
+use crate::atom;
 use core::fmt;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use tree_sitter::{Node, Tree};
-use crate::atom;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Float(f64);
@@ -196,6 +196,8 @@ pub enum BinaryOperator {
     Match,
     // \\
     Default,
+    // ::
+    Type,
     ///  Operators that are parsed and can be overriden by libraries.
     ///  &&&
     ///  <<<
@@ -427,6 +429,7 @@ pub enum Expression {
     Bool(bool),
     Nil,
     String(String),
+    Bitstring(Vec<Expression>),
     Float(Float),
     Integer(usize),
     Atom(Atom),
@@ -520,7 +523,6 @@ fn get_tree(code: &str) -> Tree {
         .expect("Error loading elixir grammar");
     parser.parse(code, None).unwrap()
 }
-
 
 pub fn parse(code: &str) -> Result<Expression, ParseError> {
     let tree = get_tree(code);
@@ -2395,6 +2397,18 @@ fn try_parse_float(state: &PState, offset: usize) -> Result<(Float, usize), Pars
     Ok((Float(f), offset))
 }
 
+fn try_parse_bitstring(state: &PState, offset: usize) -> ParserResult<Expression> {
+    let (_, offset) = try_parse_grammar_name(state, offset, "bitstring")?;
+    let (_, offset) = try_parse_grammar_name(state, offset, "<<")?;
+
+    // empty string
+    let (body, offset) = parse_expressions_sep_by_comma(state, offset).unwrap_or((vec![], offset));
+
+    let (_, offset) = try_parse_grammar_name(state, offset, ">>")?;
+
+    Ok((Expression::Bitstring(body), offset))
+}
+
 fn try_parse_string(state: &PState, offset: usize) -> Result<(String, usize), ParseError> {
     let (_, offset) = try_parse_grammar_name(state, offset, "string")?;
     let quotes = vec![r#"""#, r#"""""#];
@@ -2527,6 +2541,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
                 .map(|(string, offset)| (Expression::String(string), offset))
                 .map_err(|_| err)
         })
+        .or_else(|err| try_parse_bitstring(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_nil(state, offset).map_err(|_| err))
         .or_else(|err| {
             try_parse_bool(state, offset)
@@ -2853,6 +2868,7 @@ fn try_parse_binary_operator_node(state: &PState, offset: usize) -> ParserResult
         "-" => Ok((BinaryOperator::Minus, offset + 1)),
         "*" => Ok((BinaryOperator::Mult, offset + 1)),
         "**" => Ok((BinaryOperator::Pow, offset + 1)),
+        "::" => Ok((BinaryOperator::Type, offset + 1)),
         "/" => Ok((BinaryOperator::Div, offset + 1)),
         "++" => Ok((BinaryOperator::ListConcatenation, offset + 1)),
         "--" => Ok((BinaryOperator::ListSubtraction, offset + 1)),
@@ -7047,7 +7063,50 @@ mod tests {
 
         assert_eq!(result, target);
     }
+
+    #[test]
+    fn parse_simple_bitstring() {
+        let code = r#"
+        <<10, 20, 30>>
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Bitstring(vec![
+            int!(10),
+            int!(20),
+            int!(30),
+        ])]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_empty_bitstring() {
+        let code = r#"
+        <<>>
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Bitstring(vec![])]);
+
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn parse_bitstring_size_specifier() {
+        let code = r#"
+        <<10::8, 20::size(8)>>
+        "#;
+        let result = parse(&code).unwrap();
+        let target = Block(vec![Expression::Bitstring(vec![
+            binary_operation!(int!(10), BinaryOperator::Type, int!(8)),
+            binary_operation!(int!(20), BinaryOperator::Type, call!(id!("size"), int!(8))),
+        ])]);
+
+        assert_eq!(result, target);
+    }
 }
+
+// TODO: parse typespec as having expression body rather than specific typespec body
+// we should not try to be stricter as the elixir compiler, if it parses it's valid for us
 
 // TODO: ... as macro argument (TODO: probably treat it as a identifier if not inside typespec)
 //       base_db_query()
