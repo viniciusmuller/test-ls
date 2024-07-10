@@ -52,7 +52,10 @@ fn main() {
         );
     }
 
-    println!("total successes: {}, total failures: {}", total_successes, total_failures);
+    println!(
+        "total successes: {}, total failures: {}",
+        total_successes, total_failures
+    );
 }
 
 fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
@@ -75,9 +78,11 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
     let results = file_paths
         .par_iter()
         .map(|path| {
-            let contents = fs::read_to_string(path).expect("Should have been able to read the file");
+            let contents =
+                fs::read_to_string(path).expect("Should have been able to read the file");
             let now = Instant::now();
-            let result = simple_parser::parse(&contents, path.to_str().unwrap());
+            let parser = simple_parser::Parser::new(contents, path.to_str().unwrap().to_owned());
+            let result = parser.parse();
             let elapsed = now.elapsed();
             (path, result, elapsed)
         })
