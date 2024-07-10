@@ -1,4 +1,5 @@
 mod parser;
+mod simple_parser;
 
 use std::{
     env,
@@ -22,18 +23,17 @@ fn main() {
         let (mut successes, failures) = walkdir(path.as_str());
         let total_elapsed = now.elapsed();
 
-        successes.sort_by(|(_, e1), (_, e2)| e2.cmp(e1));
-
         // println!("Parsing {}", path.display());
 
-        // for path in &failures {
-        //     println!("failed to parse {:?}", path);
-        // }
+        for path in &failures {
+            println!("failed to parse {:?}", path);
+        }
 
-        // println!("Top 10 slowest files to parse:");
-        // for path in successes.iter().take(10) {
-        //     println!("{:?}", path);
-        // }
+        successes.sort_by(|(_, e1), (_, e2)| e2.cmp(e1));
+        println!("Top 10 slowest files to parse:");
+        for path in successes.iter().take(10) {
+            println!("{:?}", path);
+        }
 
         println!(
             "finished indexing: errors: {} successes: {}",
@@ -63,7 +63,7 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
             let path = entry.path();
             if let Some(extension) = path.extension().and_then(OsStr::to_str) {
                 match extension {
-                    "ex" => file_paths.push(path.to_owned()),
+                    "ex" | "exs" => file_paths.push(path.to_owned()),
                     _ => (),
                 }
             }
@@ -77,7 +77,7 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
         .map(|path| {
             let contents = fs::read_to_string(path).expect("Should have been able to read the file");
             let now = Instant::now();
-            let result = parser::parse(&contents);
+            let result = simple_parser::parse(&contents, path.to_str().unwrap());
             let elapsed = now.elapsed();
             (path, result, elapsed)
         })
@@ -85,13 +85,13 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
 
     let successes = results
         .iter()
-        .filter(|(_path, e, _)| e.is_ok())
+        .filter(|(_path, e, _)| !e.has_errors)
         .map(|(path, _, elapsed)| (path.to_str().unwrap().to_owned(), elapsed.to_owned()))
         .collect::<Vec<_>>();
 
     let failures = results
         .into_iter()
-        .filter(|(_path, e, _)| e.is_err())
+        .filter(|(_path, e, _)| e.has_errors)
         .map(|(path, _, _)| path.to_str().unwrap().to_owned())
         .collect();
 

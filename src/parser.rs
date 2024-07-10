@@ -1,7 +1,7 @@
 use crate::atom;
 use core::fmt;
-use std::cell::RefCell;
 use std::fmt::Debug;
+use std::{cell::RefCell, collections::VecDeque};
 use tree_sitter::{Node, Tree};
 
 #[derive(Debug, PartialEq, Clone)]
@@ -2570,7 +2570,6 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
                 .map(|(attribute, offset)| (Expression::AttributeRef(attribute), offset))
                 .map_err(|_| err)
         })
-        .or_else(|err| try_parse_list(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_charlist(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_char_expression(state, offset).map_err(|_| err))
         .or_else(|err| try_parse_binary_operator(state, offset).map_err(|_| err))
@@ -2602,6 +2601,7 @@ fn try_parse_expression(state: &PState, offset: usize) -> ParserResult<Expressio
                 .map(|(guard, offset)| (Expression::Guard(guard), offset))
                 .map_err(|_| err)
         })
+        .or_else(|err| try_parse_list(state, offset).map_err(|_| err))
         .or_else(|err| {
             // FIXME: currently we are losing the most specific parsing error somewhere in the stack
             // if you want to see the specific token that caused the error, uncomment the dbg below
