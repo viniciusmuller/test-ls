@@ -9,56 +9,37 @@ use std::{
     time::{Duration, Instant},
 };
 
+use simple_parser::Expression;
 use walkdir::WalkDir;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     let paths = &[&args[1]]; // fs::read_dir(&args[1]).unwrap();
-    let mut total_successes = 0;
-    let mut total_failures = 0;
 
     for path in paths {
         let now = Instant::now();
-        let (mut successes, failures) = walkdir(path.as_str());
+        let mut results = walkdir(path.as_str());
         let total_elapsed = now.elapsed();
 
-        // println!("Parsing {}", path.display());
+        results.sort_by(|(_, _, e1), (_, _, e2)| e2.cmp(e1));
 
-        for path in &failures {
-            println!("failed to parse {:?}", path);
-        }
-
-        successes.sort_by(|(_, e1), (_, e2)| e2.cmp(e1));
         println!("Top 10 slowest files to parse:");
-        for path in successes.iter().take(10) {
-            println!("{:?}", path);
+        for (path, _, duration) in results.iter().take(10) {
+            println!("{:?} - {:.2?}", path, duration);
         }
 
-        println!(
-            "finished indexing: errors: {} successes: {}",
-            failures.len(),
-            successes.len()
-        );
-
-        total_successes += successes.len();
-        total_failures += failures.len();
-
+        println!("finished indexing: {} files", results.len());
         println!("Total reading + parsing time: {:.2?}", total_elapsed);
 
-        println!(
-            "successes total size: {} bytes\n",
-            std::mem::size_of_val(&*successes)
-        );
+        // println!(
+        //     "successes total size: {} bytes\n",
+        //     std::mem::size_of_val(&*successes)
+        // );
     }
-
-    println!(
-        "total successes: {}, total failures: {}",
-        total_successes, total_failures
-    );
 }
 
-fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
+fn walkdir(path: &str) -> Vec<(String, Expression, Duration)> {
     let mut file_paths = Vec::new();
 
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
@@ -75,7 +56,7 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
 
     use rayon::prelude::*;
 
-    let results = file_paths
+    file_paths
         .par_iter()
         .map(|path| {
             let contents =
@@ -84,21 +65,7 @@ fn walkdir(path: &str) -> (Vec<(String, Duration)>, Vec<String>) {
             let parser = simple_parser::Parser::new(contents, path.to_str().unwrap().to_owned());
             let result = parser.parse();
             let elapsed = now.elapsed();
-            (path, result, elapsed)
+            (path.to_str().unwrap().to_owned(), result, elapsed)
         })
-        .collect::<Vec<_>>();
-
-    let successes = results
-        .iter()
-        .filter(|(_path, e, _)| !e.has_errors)
-        .map(|(path, _, elapsed)| (path.to_str().unwrap().to_owned(), elapsed.to_owned()))
-        .collect::<Vec<_>>();
-
-    let failures = results
-        .into_iter()
-        .filter(|(_path, e, _)| e.has_errors)
-        .map(|(path, _, _)| path.to_str().unwrap().to_owned())
-        .collect();
-
-    return (successes, failures);
+        .collect::<Vec<_>>()
 }
