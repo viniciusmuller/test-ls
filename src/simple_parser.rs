@@ -2,6 +2,8 @@ use std::fmt::Display;
 
 use tree_sitter::{Node, Tree};
 
+use crate::indexer::build_module_index;
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TSError {
     path: String,
@@ -51,7 +53,7 @@ impl Display for Expression {
         match self {
             Expression::FunctionDef(function) => write!(f, "FunctionDef({})", function.name),
             Expression::Module(module) => write!(f, "Module({})", module.name),
-            Expression::Attribute(name, _) => write!(f, "Module({})", name),
+            Expression::Attribute(name, _) => write!(f, "Attribute({})", name),
             Expression::Scope(_) => write!(f, "Scope()"),
             Expression::String(s) => write!(f, "String({})", s),
             Expression::Identifier(id) => write!(f, "Identifier({})", id),
@@ -86,6 +88,12 @@ impl Parser {
             }
             expr => expr,
         };
+
+        // TODO: handle multiple modules in top level scope
+        // if let Expression::Module(ref module) = ast {
+        //     dbg!(build_module_index(&module));
+        // }
+
         // print_expression(&ast, 0);
         ast
     }
@@ -130,22 +138,17 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
 }
 
 fn parse_string_node(parser: &Parser, node: &Node) -> Expression {
-    match try_parse_grammar_name(node, "string") {
-        Some(_) => {
-            let mut cursor = node.walk();
-            let children = node.children(&mut cursor);
+    let mut cursor = node.walk();
+    let children = node.children(&mut cursor);
 
-            let a = children
-                .into_iter()
-                .filter(|n| !["\"", "\"\"\""].contains(&n.grammar_name()))
-                .map(|n| parser.get_text(&n))
-                .collect::<Vec<_>>()
-                .join("");
+    let string = children
+        .into_iter()
+        .filter(|n| !["\"", "\"\"\""].contains(&n.grammar_name()))
+        .map(|n| parser.get_text(&n))
+        .collect::<Vec<_>>()
+        .join("");
 
-            Expression::String(a)
-        }
-        None => build_unparsed_node(parser, node),
-    }
+    Expression::String(string)
 }
 
 fn parse_unary_operator(parser: &Parser, node: &Node) -> Expression {
