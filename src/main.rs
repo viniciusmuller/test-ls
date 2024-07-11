@@ -1,4 +1,5 @@
 mod parser;
+mod indexer;
 mod simple_parser;
 
 use std::{

@@ -111,18 +111,14 @@ fn get_tree(code: &str) -> Tree {
     parser.parse(code, None).unwrap()
 }
 
-// fn parse_node(parser: &Parser, node: &Node) -> Expression {
-//     let parsed_node = parse_expression(parser, node);
-
-// }
-
 fn parse_expression(parser: &Parser, node: &Node) -> Expression {
     let grammar_name = node.grammar_name();
 
     match grammar_name {
         "ERROR" => build_treesitter_error_node(node),
         "identifier" => parse_identifier_node(parser, node),
-        "call" => try_parse_call_node(parser, node),
+        "call" => parse_call_node(parser, node),
+        "block" => parse_block_node(parser, node),
         _unknown => build_unparsed_node(parser, node),
     }
 }
@@ -132,10 +128,27 @@ fn parse_identifier_node(parser: &Parser, node: &Node) -> Expression {
     Expression::Identifier(text.to_owned())
 }
 
-fn try_parse_call_node(parser: &Parser, node: &Node) -> Expression {
+fn parse_call_node(parser: &Parser, node: &Node) -> Expression {
     try_parse_module(parser, node)
         .or_else(|| try_parse_function_definition(parser, node))
         .unwrap_or_else(|| build_unparsed_node(parser, node))
+}
+
+fn parse_block_node(parser: &Parser, node: &Node) -> Expression {
+    let mut result = Vec::new();
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let grammar_name = child.grammar_name();
+
+        if [";", "(", ")"].contains(&grammar_name) {
+            continue;
+        }
+
+        result.push(parse_expression(parser, &child))
+    }
+
+    normalize_block(&mut result)
 }
 
 fn build_unparsed_node(parser: &Parser, node: &Node) -> Expression {
@@ -258,7 +271,7 @@ fn try_parse_either_identifier<'a>(
     target: &[&'a str],
 ) -> Option<&'a str> {
     for t in target {
-        if let Some(node) = try_parse_specific_identifier(parser, node, t) {
+        if try_parse_specific_identifier(parser, node, t).is_some() {
             return Some(t);
         }
     }
@@ -442,7 +455,44 @@ mod tests {
         assert_eq!(result, expected)
     }
 
-    // TODO: parse block with parenthesis (a; b)
+    #[test]
+    fn parse_single_line_blocks() {
+        let code = "(a = 1; a + 1)";
+        let result = parse(code);
+        let expected = scope!(vec![
+            unparsed!(
+                "binary_operator",
+                vec![id!("a"), unparsed!("=", vec![]), unparsed!("integer", vec![])]
+            ),
+            unparsed!(
+                "binary_operator",
+                vec![id!("a"), unparsed!("+", vec![]), unparsed!("integer", vec![])]
+            ),
+        ]);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_multi_line_blocks() {
+        let code = "
+        (
+            a = 1
+            a + 1
+        )
+        ";
+        let result = parse(code);
+        let expected = scope!(vec![
+            unparsed!(
+                "binary_operator",
+                vec![id!("a"), unparsed!("=", vec![]), unparsed!("integer", vec![])]
+            ),
+            unparsed!(
+                "binary_operator",
+                vec![id!("a"), unparsed!("+", vec![]), unparsed!("integer", vec![])]
+            ),
+        ]);
+        assert_eq!(result, expected)
+    }
 
     #[test]
     fn parse_function_def() {
