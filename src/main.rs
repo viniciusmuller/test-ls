@@ -29,13 +29,46 @@ fn main() {
             println!("{:?} - {:.2?}", path, duration);
         }
 
-        println!("finished indexing: {} files", results.len());
-        println!("Total reading + parsing time: {:.2?}", total_elapsed);
+        let total_modules = results.iter().fold(0, |acc, (_, expr, _)| acc + count_expression_modules(expr));
+        let total_functions = results.iter().fold(0, |acc, (_, expr, _)| acc + count_expression_functions(expr));
 
-        // println!(
-        //     "successes total size: {} bytes\n",
-        //     std::mem::size_of_val(&*successes)
-        // );
+        println!("finished indexing: {} files", results.len());
+        println!("Indexed {} modules", total_modules);
+        println!("Indexed {} functions", total_functions);
+        println!("Total reading + parsing time: {:.2?}", total_elapsed);
+    }
+}
+
+// TODO: create general structure for folding the ast on different criteria
+fn count_expression_modules(ast: &Expression) -> usize {
+    match ast {
+        Expression::Module(module) => 1 + count_expression_modules(&module.body),
+        Expression::FunctionDef(function) => count_expression_modules(&function.body),
+        Expression::Scope(scope) => scope
+            .body
+            .iter()
+            .fold(0, |acc, expr| acc + count_expression_modules(&expr)),
+        Expression::Identifier(_) => 0,
+        Expression::Unparsed(_, children) => children
+            .iter()
+            .fold(0, |acc, expr| acc + count_expression_modules(&expr)),
+        Expression::TreeSitterError(_, _) => 0,
+    }
+}
+
+fn count_expression_functions(ast: &Expression) -> usize {
+    match ast {
+        Expression::Module(module) => count_expression_functions(&module.body),
+        Expression::FunctionDef(function) => 1 + count_expression_functions(&function.body),
+        Expression::Scope(scope) => scope
+            .body
+            .iter()
+            .fold(0, |acc, expr| acc + count_expression_functions(&expr)),
+        Expression::Identifier(_) => 0,
+        Expression::Unparsed(_, children) => children
+            .iter()
+            .fold(0, |acc, expr| acc + count_expression_functions(&expr)),
+        Expression::TreeSitterError(_, _) => 0,
     }
 }
 

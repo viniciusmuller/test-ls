@@ -17,18 +17,27 @@ pub struct Point {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Module {
-    name: String,
-    body: Box<Expression>,
+    pub name: String,
+    pub body: Box<Expression>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct FunctionDef {
+    pub name: String,
+    pub is_private: bool,
+    pub parameters: Vec<Expression>,
+    pub body: Box<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Scope {
-    body: Vec<Expression>,
+    pub body: Vec<Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expression {
     Module(Module),
+    FunctionDef(FunctionDef),
     Scope(Scope),
     Identifier(String),
     Unparsed(String, Vec<Expression>),
@@ -38,6 +47,7 @@ pub enum Expression {
 impl Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Expression::FunctionDef(function) => write!(f, "FunctionDef({})", function.name),
             Expression::Module(module) => write!(f, "Module({})", module.name),
             Expression::Scope(_) => write!(f, "Scope()"),
             Expression::Identifier(id) => write!(f, "Identifier({})", id),
@@ -123,7 +133,9 @@ fn parse_identifier_node(parser: &Parser, node: &Node) -> Expression {
 }
 
 fn try_parse_call_node(parser: &Parser, node: &Node) -> Expression {
-    try_parse_module(parser, node).unwrap_or_else(|| build_unparsed_node(parser, node))
+    try_parse_module(parser, node)
+        .or_else(|| try_parse_function_definition(parser, node))
+        .unwrap_or_else(|| build_unparsed_node(parser, node))
 }
 
 fn build_unparsed_node(parser: &Parser, node: &Node) -> Expression {
@@ -143,7 +155,7 @@ fn try_parse_module(parser: &Parser, node: &Node) -> Option<Expression> {
     let child = node.child(0)?;
     let _ = try_parse_specific_identifier(parser, &child, "defmodule")?;
     let child = child.next_sibling()?;
-    let module_name = try_parse_arguments(parser, &child)?;
+    let module_name = try_parse_module_def_name(parser, &child)?;
     let child = child.next_sibling()?;
     let body = try_parse_do_block(parser, &child)?;
     let module = Module {
@@ -153,11 +165,57 @@ fn try_parse_module(parser: &Parser, node: &Node) -> Option<Expression> {
     Some(Expression::Module(module))
 }
 
-fn try_parse_arguments(parser: &Parser, node: &Node) -> Option<String> {
+fn try_parse_module_def_name(parser: &Parser, node: &Node) -> Option<String> {
     let _ = try_parse_grammar_name(node, "arguments")?;
     let child = node.child(0)?;
     let alias = try_parse_alias(parser, &child);
     alias
+}
+
+fn try_parse_function_definition(parser: &Parser, node: &Node) -> Option<Expression> {
+    let child = node.child(0)?;
+    let caller = try_parse_either_identifier(parser, &child, &["def", "defp"])?;
+    let is_private = caller == "defp";
+    let def_arguments_node = child.next_sibling()?;
+    let (function_name, parameters) = try_parse_function_def(parser, &def_arguments_node)?;
+    let body_node = def_arguments_node.next_sibling()?;
+    let body = try_parse_do_block(parser, &body_node)?;
+    let function = FunctionDef {
+        is_private,
+        parameters,
+        name: function_name.to_string(),
+        body: Box::new(body),
+    };
+    Some(Expression::FunctionDef(function))
+}
+
+fn try_parse_function_def(parser: &Parser, node: &Node) -> Option<(String, Vec<Expression>)> {
+    let _ = try_parse_grammar_name(node, "arguments")?;
+    let call_node = node.child(0)?;
+    let _ = try_parse_grammar_name(&call_node, "call")?;
+    let func_name_node = call_node.child(0)?;
+    let function_name = parser.get_text(&func_name_node);
+    let parameters_arguments = func_name_node.next_sibling()?;
+    let _ = try_parse_grammar_name(&parameters_arguments, "arguments")?;
+    let parameters = parse_parameters(parser, &parameters_arguments);
+    Some((function_name, parameters))
+}
+
+fn parse_parameters(parser: &Parser, node: &Node) -> Vec<Expression> {
+    let mut result = Vec::new();
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let grammar_name = child.grammar_name();
+
+        if [",", "(", ")"].contains(&grammar_name) {
+            continue;
+        }
+
+        result.push(parse_expression(parser, &child))
+    }
+
+    result
 }
 
 fn try_parse_do_block(parser: &Parser, node: &Node) -> Option<Expression> {
@@ -192,6 +250,20 @@ fn try_parse_grammar_name<'a>(node: &'a Node, target: &str) -> Option<&'a Node<'
     } else {
         None
     }
+}
+
+fn try_parse_either_identifier<'a>(
+    parser: &Parser,
+    node: &'a Node,
+    target: &[&'a str],
+) -> Option<&'a str> {
+    for t in target {
+        if let Some(node) = try_parse_specific_identifier(parser, node, t) {
+            return Some(t);
+        }
+    }
+
+    None
 }
 
 fn try_parse_specific_identifier<'a>(
@@ -241,6 +313,10 @@ fn print_expression(ast: &Expression, depth: usize) {
             println!("{}{}└ {}", "  ".repeat(depth), depth, ast);
             print_expression(&module.body, depth + 1)
         }
+        Expression::FunctionDef(function) => {
+            println!("{}{}└ {}", "  ".repeat(depth), depth, ast);
+            print_expression(&function.body, depth + 1)
+        }
         Expression::Scope(scope) => {
             println!("{}{}└ {}", "  ".repeat(depth), depth, ast);
 
@@ -255,6 +331,7 @@ fn print_expression(ast: &Expression, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::Expression;
+    use super::FunctionDef;
     use super::Module;
     use super::Parser;
     use super::Scope;
@@ -273,8 +350,8 @@ mod tests {
 
     #[macro_export]
     macro_rules! unparsed {
-        ($x:expr) => {
-            Expression::Unparsed($x.to_string())
+        ($x:expr, $children:expr) => {
+            Expression::Unparsed($x.to_string(), $children)
         };
     }
 
@@ -297,6 +374,31 @@ mod tests {
         ($name:expr, $body:expr) => {
             Expression::Module(Module {
                 name: $name.to_string(),
+                body: Box::new($body),
+            })
+        };
+    }
+
+    // TODO: reuse code along these two def/defp macros
+    #[macro_export]
+    macro_rules! def {
+        ($name:expr, $params:expr, $body:expr) => {
+            Expression::FunctionDef(FunctionDef {
+                is_private: false,
+                name: $name.to_string(),
+                parameters: $params,
+                body: Box::new($body),
+            })
+        };
+    }
+
+    #[macro_export]
+    macro_rules! defp {
+        ($name:expr, $params:expr, $body:expr) => {
+            Expression::FunctionDef(FunctionDef {
+                is_private: true,
+                name: $name.to_string(),
+                parameters: $params,
                 body: Box::new($body),
             })
         };
@@ -337,6 +439,46 @@ mod tests {
         ";
         let result = parse(code);
         let expected = module!("MyModule", scope!(vec![]));
+        assert_eq!(result, expected)
+    }
+
+    // TODO: parse block with parenthesis (a; b)
+
+    #[test]
+    fn parse_function_def() {
+        let code = "
+        def public(a, b) do
+            a + b
+        end
+        ";
+        let result = parse(code);
+        let expected = def!(
+            "public",
+            vec![id!("a"), id!("b")],
+            unparsed!(
+                "binary_operator",
+                vec![id!("a"), unparsed!("+", vec![]), id!("b"),]
+            )
+        );
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_function_defp() {
+        let code = "
+        defp my_func a, b do
+            a + b
+        end
+        ";
+        let result = parse(code);
+        let expected = defp!(
+            "my_func",
+            vec![id!("a"), id!("b")],
+            unparsed!(
+                "binary_operator",
+                vec![id!("a"), unparsed!("+", vec![]), id!("b"),]
+            )
+        );
         assert_eq!(result, expected)
     }
 }
