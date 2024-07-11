@@ -1,19 +1,20 @@
 use crate::simple_parser::Module;
 
 pub struct ModuleIndex {
+    docs: String,
     scope: ScopeIndex,
     attributes: Vec<String>,
-    variables: Vec<String>,
     functions: Vec<String>,
     macros: Vec<String>,
 }
 
 pub struct ScopeIndex {
+    parent: Option<Box<ScopeIndex>>,
     imports: Vec<String>,
     aliases: Vec<String>,
     requires: Vec<String>,
     variables: Vec<String>,
-    parent: Option<Box<ScopeIndex>>
+    modules: Vec<String>,
 }
 
 pub fn build_module_index(module: Module) -> ModuleIndex {

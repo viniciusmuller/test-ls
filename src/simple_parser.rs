@@ -38,6 +38,8 @@ pub struct Scope {
 pub enum Expression {
     Module(Module),
     FunctionDef(FunctionDef),
+    Attribute(String, Box<Expression>),
+    String(String),
     Scope(Scope),
     Identifier(String),
     Unparsed(String, Vec<Expression>),
@@ -49,7 +51,9 @@ impl Display for Expression {
         match self {
             Expression::FunctionDef(function) => write!(f, "FunctionDef({})", function.name),
             Expression::Module(module) => write!(f, "Module({})", module.name),
+            Expression::Attribute(name, _) => write!(f, "Module({})", name),
             Expression::Scope(_) => write!(f, "Scope()"),
+            Expression::String(s) => write!(f, "String({})", s),
             Expression::Identifier(id) => write!(f, "Identifier({})", id),
             Expression::Unparsed(grammar_name, _) => write!(f, "Unparsed({})", grammar_name),
             Expression::TreeSitterError(start_pos, _) => write!(
@@ -116,16 +120,40 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
 
     match grammar_name {
         "ERROR" => build_treesitter_error_node(node),
-        "identifier" => parse_identifier_node(parser, node),
+        "identifier" => Expression::Identifier(parse_identifier_node(parser, node)),
         "call" => parse_call_node(parser, node),
+        "string" => parse_string_node(parser, node),
+        "unary_operator" => parse_unary_operator(parser, node),
         "block" => parse_block_node(parser, node),
         _unknown => build_unparsed_node(parser, node),
     }
 }
 
-fn parse_identifier_node(parser: &Parser, node: &Node) -> Expression {
-    let text = parser.get_text(node);
-    Expression::Identifier(text.to_owned())
+fn parse_string_node(parser: &Parser, node: &Node) -> Expression {
+    match try_parse_grammar_name(node, "string") {
+        Some(_) => {
+            let mut cursor = node.walk();
+            let children = node.children(&mut cursor);
+
+            let a = children
+                .into_iter()
+                .filter(|n| !["\"", "\"\"\""].contains(&n.grammar_name()))
+                .map(|n| parser.get_text(&n))
+                .collect::<Vec<_>>()
+                .join("");
+
+            Expression::String(a)
+        }
+        None => build_unparsed_node(parser, node),
+    }
+}
+
+fn parse_unary_operator(parser: &Parser, node: &Node) -> Expression {
+    try_parse_attribute(parser, node).unwrap_or_else(|| build_unparsed_node(parser, node))
+}
+
+fn parse_identifier_node(parser: &Parser, node: &Node) -> String {
+    parser.get_text(node).to_owned()
 }
 
 fn parse_call_node(parser: &Parser, node: &Node) -> Expression {
@@ -162,6 +190,25 @@ fn build_unparsed_node(parser: &Parser, node: &Node) -> Expression {
     }
 
     Expression::Unparsed(grammar_name.to_string(), tokens)
+}
+
+fn try_parse_attribute(parser: &Parser, node: &Node) -> Option<Expression> {
+    let _ = try_parse_grammar_name(node, "unary_operator")?;
+    let child = node.child(0)?;
+    let _ = try_parse_grammar_name(&child, "@")?;
+
+    let call_node = child.next_sibling()?;
+    let _ = try_parse_grammar_name(&call_node, "call")?;
+
+    let attribute_node = call_node.child(0)?;
+    let attribute_name = parse_identifier_node(parser, &attribute_node);
+
+    let arguments_node = attribute_node.next_sibling()?;
+    let _ = try_parse_grammar_name(&arguments_node, "arguments")?;
+
+    let body_node = arguments_node.child(0)?;
+    let body = parse_expression(parser, &body_node);
+    Some(Expression::Attribute(attribute_name, Box::new(body)))
 }
 
 fn try_parse_module(parser: &Parser, node: &Node) -> Option<Expression> {
@@ -417,6 +464,20 @@ mod tests {
         };
     }
 
+    #[macro_export]
+    macro_rules! string {
+        ($s:expr) => {
+            Expression::String($s.to_owned())
+        };
+    }
+
+    #[macro_export]
+    macro_rules! attribute {
+        ($name:expr, $body:expr) => {
+            Expression::Attribute($name.to_string(), Box::new($body))
+        };
+    }
+
     #[test]
     fn parse_identifier() {
         let code = "my_variable_name";
@@ -462,11 +523,19 @@ mod tests {
         let expected = scope!(vec![
             unparsed!(
                 "binary_operator",
-                vec![id!("a"), unparsed!("=", vec![]), unparsed!("integer", vec![])]
+                vec![
+                    id!("a"),
+                    unparsed!("=", vec![]),
+                    unparsed!("integer", vec![])
+                ]
             ),
             unparsed!(
                 "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), unparsed!("integer", vec![])]
+                vec![
+                    id!("a"),
+                    unparsed!("+", vec![]),
+                    unparsed!("integer", vec![])
+                ]
             ),
         ]);
         assert_eq!(result, expected)
@@ -484,11 +553,19 @@ mod tests {
         let expected = scope!(vec![
             unparsed!(
                 "binary_operator",
-                vec![id!("a"), unparsed!("=", vec![]), unparsed!("integer", vec![])]
+                vec![
+                    id!("a"),
+                    unparsed!("=", vec![]),
+                    unparsed!("integer", vec![])
+                ]
             ),
             unparsed!(
                 "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), unparsed!("integer", vec![])]
+                vec![
+                    id!("a"),
+                    unparsed!("+", vec![]),
+                    unparsed!("integer", vec![])
+                ]
             ),
         ]);
         assert_eq!(result, expected)
@@ -507,7 +584,7 @@ mod tests {
             vec![id!("a"), id!("b")],
             unparsed!(
                 "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), id!("b"),]
+                vec![id!("a"), unparsed!("+", vec![]), id!("b")]
             )
         );
         assert_eq!(result, expected)
@@ -526,9 +603,63 @@ mod tests {
             vec![id!("a"), id!("b")],
             unparsed!(
                 "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), id!("b"),]
+                vec![id!("a"), unparsed!("+", vec![]), id!("b")]
             )
         );
         assert_eq!(result, expected)
     }
+
+    #[test]
+    fn parse_attribute() {
+        let code = r#"
+        @doc "my docs"
+        "#;
+        let result = parse(code);
+        let expected = attribute!("doc", string!("my docs"));
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_simple_string() {
+        let code = r#"
+        "simple string!"
+        "#;
+        let result = parse(code);
+        let expected = string!("simple string!");
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_string_interpolation() {
+        let code = r#"
+        "today is #{weather}"
+        "#;
+        let result = parse(code);
+        let expected = string!("today is #{weather}");
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_string_escape_chars() {
+        let code = "
+        \"newline incoming\n\"
+        ";
+        let result = parse(code);
+        let expected = string!("newline incoming\n");
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_heredoc_string() {
+        let code = r#"
+        """
+        Heredoc string!
+        """
+        "#;
+        let result = parse(code);
+        let expected = string!("\n        Heredoc string!\n        ");
+        assert_eq!(result, expected)
+    }
+
+    // TODO: parse basic types like floats, ints, atoms
 }

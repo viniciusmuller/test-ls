@@ -1,12 +1,11 @@
-mod parser;
 mod indexer;
+mod parser;
 mod simple_parser;
 
 use std::{
     env,
     ffi::OsStr,
     fs,
-    path::Path,
     time::{Duration, Instant},
 };
 
@@ -30,8 +29,12 @@ fn main() {
             println!("{:?} - {:.2?}", path, duration);
         }
 
-        let total_modules = results.iter().fold(0, |acc, (_, expr, _)| acc + count_expression_modules(expr));
-        let total_functions = results.iter().fold(0, |acc, (_, expr, _)| acc + count_expression_functions(expr));
+        let total_modules = results
+            .iter()
+            .fold(0, |acc, (_, expr, _)| acc + count_expression_modules(expr));
+        let total_functions = results.iter().fold(0, |acc, (_, expr, _)| {
+            acc + count_expression_functions(expr)
+        });
 
         println!("finished indexing: {} files", results.len());
         println!("Indexed {} modules", total_modules);
@@ -44,7 +47,9 @@ fn main() {
 fn count_expression_modules(ast: &Expression) -> usize {
     match ast {
         Expression::Module(module) => 1 + count_expression_modules(&module.body),
+        Expression::Attribute(_, _) => 0,
         Expression::FunctionDef(function) => count_expression_modules(&function.body),
+        Expression::String(_) => 0,
         Expression::Scope(scope) => scope
             .body
             .iter()
@@ -60,6 +65,8 @@ fn count_expression_modules(ast: &Expression) -> usize {
 fn count_expression_functions(ast: &Expression) -> usize {
     match ast {
         Expression::Module(module) => count_expression_functions(&module.body),
+        Expression::Attribute(_, _) => 0,
+        Expression::String(_) => 0,
         Expression::FunctionDef(function) => 1 + count_expression_functions(&function.body),
         Expression::Scope(scope) => scope
             .body
