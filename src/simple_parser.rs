@@ -22,43 +22,26 @@ pub struct Module {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Scope {
+    body: Vec<Expression>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expression {
     Module(Module),
-    Block(Vec<Expression>),
-    Call,
-    // FunctionDefinition(Module),
+    Scope(Scope),
     Identifier(String),
-    Unparsed(String),
+    Unparsed(String, Vec<Expression>),
     TreeSitterError(Point, Point),
-    Parent(Box<Expression>, Vec<Expression>),
 }
 
 impl Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Expression::Module(module) => write!(f, "Module({})", module.name),
+            Expression::Scope(_) => write!(f, "Scope()"),
             Expression::Identifier(id) => write!(f, "Identifier({})", id),
-            Expression::Call => write!(f, "Call()"),
-            Expression::Unparsed(grammar_name) => write!(f, "Unparsed({})", grammar_name),
-            Expression::Block(children) => write!(
-                f,
-                "Block({})",
-                children
-                    .iter()
-                    .map(|c| format!("{}", c))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            Expression::Parent(node, children) => write!(
-                f,
-                "Parent({})({})",
-                node,
-                children
-                    .iter()
-                    .map(|c| format!("{}", c))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            Expression::Unparsed(grammar_name, _) => write!(f, "Unparsed({})", grammar_name),
             Expression::TreeSitterError(start_pos, _) => write!(
                 f,
                 "TreeSitterError({}, {})",
@@ -82,17 +65,14 @@ impl Parser {
     pub fn parse(&self) -> Expression {
         let tree = get_tree(&self.code);
         let root_node = tree.root_node();
-        let ast = match parse_node(self, &root_node) {
+        let ast = match parse_expression(self, &root_node) {
             // Ignore "source" root node and normalize block if single expression
-            Expression::Parent(_, mut children) => normalize_block(&mut children),
-            Expression::Unparsed(name) if name == "source" => Expression::Block(vec![]),
-            // TODO: don't panic, just log if it ever happens
-            block => {
-                dbg!(&block);
-                panic!("should always receive source block from tree-sitter")
+            Expression::Unparsed(name, mut children) if name == "source" => {
+                normalize_block(&mut children)
             }
+            expr => expr,
         };
-        print_ast(&ast, 0);
+        // print_expression(&ast, 0);
         ast
     }
 
@@ -106,7 +86,10 @@ fn normalize_block(block: &mut Vec<Expression>) -> Expression {
     if block.len() == 1 {
         block.pop().unwrap()
     } else {
-        Expression::Block(block.to_owned())
+        let scope = Scope {
+            body: block.to_owned(),
+        };
+        Expression::Scope(scope)
     }
 }
 
@@ -118,21 +101,10 @@ fn get_tree(code: &str) -> Tree {
     parser.parse(code, None).unwrap()
 }
 
-fn parse_node(parser: &Parser, node: &Node) -> Expression {
-    if node.child_count() == 0 {
-        parse_expression(parser, node)
-    } else {
-        let mut cursor = node.walk();
-        let mut tokens = vec![];
+// fn parse_node(parser: &Parser, node: &Node) -> Expression {
+//     let parsed_node = parse_expression(parser, node);
 
-        for node in node.children(&mut cursor) {
-            tokens.push(parse_node(parser, &node));
-        }
-
-        let node = parse_expression(parser, node);
-        Expression::Parent(Box::new(node), tokens)
-    }
-}
+// }
 
 fn parse_expression(parser: &Parser, node: &Node) -> Expression {
     let grammar_name = node.grammar_name();
@@ -140,9 +112,8 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
     match grammar_name {
         "ERROR" => build_treesitter_error_node(node),
         "identifier" => parse_identifier_node(parser, node),
-        "call" => try_parse_call_node(parser, node)
-            .unwrap_or(Expression::Unparsed(grammar_name.to_owned())),
-        name => Expression::Unparsed(name.to_owned()),
+        "call" => try_parse_call_node(parser, node),
+        _unknown => build_unparsed_node(parser, node),
     }
 }
 
@@ -151,18 +122,76 @@ fn parse_identifier_node(parser: &Parser, node: &Node) -> Expression {
     Expression::Identifier(text.to_owned())
 }
 
-fn try_parse_call_node(parser: &Parser, node: &Node) -> Option<Expression> {
-    try_parse_module(parser, node)
+fn try_parse_call_node(parser: &Parser, node: &Node) -> Expression {
+    try_parse_module(parser, node).unwrap_or_else(|| build_unparsed_node(parser, node))
+}
+
+fn build_unparsed_node(parser: &Parser, node: &Node) -> Expression {
+    let grammar_name = node.grammar_name();
+
+    let mut cursor = node.walk();
+    let mut tokens = vec![];
+
+    for node in node.children(&mut cursor) {
+        tokens.push(parse_expression(parser, &node));
+    }
+
+    Expression::Unparsed(grammar_name.to_string(), tokens)
 }
 
 fn try_parse_module(parser: &Parser, node: &Node) -> Option<Expression> {
-    // TODO: update the logic to make this function consume all of its downstream tokens and not
-    // duplicate them (ie it should return its children as well)
-    let child = node.child(0).unwrap();
+    let child = node.child(0)?;
     let _ = try_parse_specific_identifier(parser, &child, "defmodule")?;
-    todo!();
-    // now there should be `arguments` with the module name as an alias
-    // and then the module body as a do block/keyword syntax
+    let child = child.next_sibling()?;
+    let module_name = try_parse_arguments(parser, &child)?;
+    let child = child.next_sibling()?;
+    let body = try_parse_do_block(parser, &child)?;
+    let module = Module {
+        name: module_name.to_string(),
+        body: Box::new(body),
+    };
+    Some(Expression::Module(module))
+}
+
+fn try_parse_arguments(parser: &Parser, node: &Node) -> Option<String> {
+    let _ = try_parse_grammar_name(node, "arguments")?;
+    let child = node.child(0)?;
+    let alias = try_parse_alias(parser, &child);
+    alias
+}
+
+fn try_parse_do_block(parser: &Parser, node: &Node) -> Option<Expression> {
+    let _ = try_parse_grammar_name(node, "do_block")?;
+    let child = node.child(0)?;
+    let _ = try_parse_grammar_name(&child, "do")?;
+    let mut body = parse_sibilings_until_end(parser, &child)?;
+    let body = normalize_block(&mut body);
+    Some(body)
+}
+
+fn parse_sibilings_until_end(parser: &Parser, node: &Node) -> Option<Vec<Expression>> {
+    let mut result = Vec::new();
+    let mut next = node.next_sibling();
+
+    while next.is_some() {
+        let node = next?;
+        if node.grammar_name() == "end" {
+            return Some(result);
+        }
+
+        result.push(parse_expression(parser, &node));
+        next = node.next_sibling();
+    }
+
+    Some(result)
+}
+
+fn try_parse_grammar_name<'a>(node: &'a Node, target: &str) -> Option<&'a Node<'a>> {
+    if node.grammar_name() == target {
+        Some(node)
+    } else {
+        None
+    }
 }
 
 fn try_parse_specific_identifier<'a>(
@@ -172,6 +201,14 @@ fn try_parse_specific_identifier<'a>(
 ) -> Option<&'a Node<'a>> {
     if parser.get_text(node) == target {
         Some(node)
+    } else {
+        None
+    }
+}
+
+fn try_parse_alias(parser: &Parser, node: &Node) -> Option<String> {
+    if node.grammar_name() == "alias" {
+        Some(parser.get_text(node))
     } else {
         None
     }
@@ -191,13 +228,24 @@ fn tree_sitter_location_to_point(ts_point: tree_sitter::Point) -> Point {
     }
 }
 
-fn print_ast(ast: &Expression, depth: usize) {
+fn print_expression(ast: &Expression, depth: usize) {
     match ast {
-        Expression::Parent(expr, children) => {
+        Expression::Unparsed(expr, children) => {
             println!("{}{}└ {}", "  ".repeat(depth), depth, expr);
 
             for child in children {
-                print_ast(child, depth + 1)
+                print_expression(child, depth + 1)
+            }
+        }
+        Expression::Module(module) => {
+            println!("{}{}└ {}", "  ".repeat(depth), depth, ast);
+            print_expression(&module.body, depth + 1)
+        }
+        Expression::Scope(scope) => {
+            println!("{}{}└ {}", "  ".repeat(depth), depth, ast);
+
+            for child in scope.body.clone() {
+                print_expression(&child, depth + 1)
             }
         }
         expr => println!("{}{}└ {}", "  ".repeat(depth), depth, expr),
@@ -207,7 +255,9 @@ fn print_ast(ast: &Expression, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::Expression;
+    use super::Module;
     use super::Parser;
+    use super::Scope;
 
     fn parse(code: &str) -> Expression {
         let parser = Parser::new(code.to_owned(), "nofile".to_owned());
@@ -229,9 +279,26 @@ mod tests {
     }
 
     #[macro_export]
+    macro_rules! scope {
+        ($body:expr) => {
+            Expression::Scope(Scope { body: $body })
+        };
+    }
+
+    #[macro_export]
     macro_rules! parent {
         ($x:expr, $children:expr) => {
             Expression::Parent(Box::new($x), $children)
+        };
+    }
+
+    #[macro_export]
+    macro_rules! module {
+        ($name:expr, $body:expr) => {
+            Expression::Module(Module {
+                name: $name.to_string(),
+                body: Box::new($body),
+            })
         };
     }
 
@@ -249,10 +316,7 @@ mod tests {
         let result = parse(code);
 
         match result {
-            Expression::Parent(p, _) => match *p {
-                Expression::TreeSitterError(_, _) => {}
-                _ => panic!("failed to match parent"),
-            },
+            Expression::TreeSitterError(_, _) => {}
             _ => panic!("failed to match parent"),
         }
     }
@@ -261,7 +325,7 @@ mod tests {
     fn parse_empty_file() {
         let code = "";
         let result = parse(code);
-        let expected = Expression::Block(vec![]);
+        let expected = scope!(vec![]);
         assert_eq!(result, expected)
     }
 
@@ -269,13 +333,10 @@ mod tests {
     fn parse_module() {
         let code = "
         defmodule MyModule do
-            def a do
-                10
-            end
         end
         ";
         let result = parse(code);
-        let expected = Expression::Block(vec![]);
+        let expected = module!("MyModule", scope!(vec![]));
         assert_eq!(result, expected)
     }
 }
