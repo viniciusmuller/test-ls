@@ -42,6 +42,7 @@ pub enum Expression {
     FunctionDef(FunctionDef),
     Attribute(String, Box<Expression>),
     String(String),
+    Bool(bool),
     Scope(Scope),
     Identifier(String),
     Unparsed(String, Vec<Expression>),
@@ -56,6 +57,7 @@ impl Display for Expression {
             Expression::Attribute(name, _) => write!(f, "Attribute({})", name),
             Expression::Scope(_) => write!(f, "Scope()"),
             Expression::String(s) => write!(f, "String({})", s),
+            Expression::Bool(b) => write!(f, "Bool({})", b),
             Expression::Identifier(id) => write!(f, "Identifier({})", id),
             Expression::Unparsed(grammar_name, _) => write!(f, "Unparsed({})", grammar_name),
             Expression::TreeSitterError(start_pos, _) => write!(
@@ -131,6 +133,7 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
         "identifier" => Expression::Identifier(parse_identifier_node(parser, node)),
         "call" => parse_call_node(parser, node),
         "string" => parse_string_node(parser, node),
+        "boolean" => parse_boolean_node(parser, node),
         "unary_operator" => parse_unary_operator(parser, node),
         "block" => parse_block_node(parser, node),
         _unknown => build_unparsed_node(parser, node),
@@ -153,6 +156,10 @@ fn parse_string_node(parser: &Parser, node: &Node) -> Expression {
 
 fn parse_unary_operator(parser: &Parser, node: &Node) -> Expression {
     try_parse_attribute(parser, node).unwrap_or_else(|| build_unparsed_node(parser, node))
+}
+
+fn parse_boolean_node(parser: &Parser, node: &Node) -> Expression {
+    Expression::Bool(parser.get_text(node) == "true")
 }
 
 fn parse_identifier_node(parser: &Parser, node: &Node) -> String {
@@ -475,6 +482,13 @@ mod tests {
     }
 
     #[macro_export]
+    macro_rules! bool {
+        ($v:expr) => {
+            Expression::Bool($v)
+        };
+    }
+
+    #[macro_export]
     macro_rules! attribute {
         ($name:expr, $body:expr) => {
             Expression::Attribute($name.to_string(), Box::new($body))
@@ -661,6 +675,22 @@ mod tests {
         "#;
         let result = parse(code);
         let expected = string!("\n        Heredoc string!\n        ");
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_boolean_true() {
+        let code = "true";
+        let result = parse(code);
+        let expected = bool!(true);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_boolean_false() {
+        let code = "false";
+        let result = parse(code);
+        let expected = bool!(false);
         assert_eq!(result, expected)
     }
 
