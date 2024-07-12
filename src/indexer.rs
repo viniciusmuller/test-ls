@@ -1,8 +1,8 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::{cell::RefCell, collections::HashSet};
 
-use crate::simple_parser::{BinaryOperator, Expression, Module, Point, Scope};
+use crate::simple_parser::{BinaryOperator, Expression, Module, Point};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct FunctionIndex {
@@ -46,9 +46,9 @@ impl Default for ModuleIndex {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ScopeIndex {
     parent: Option<Rc<RefCell<ScopeIndex>>>,
-    imports: Vec<String>,
-    aliases: Vec<String>,
-    requires: Vec<String>,
+    imports: HashSet<String>,
+    aliases: HashSet<String>,
+    requires: HashSet<String>,
     variables: Vec<String>,
     modules: HashMap<String, ModuleIndex>,
 }
@@ -57,9 +57,9 @@ impl Default for ScopeIndex {
     fn default() -> Self {
         Self {
             parent: None,
-            imports: vec![],
-            aliases: vec![],
-            requires: vec![],
+            imports: HashSet::new(),
+            aliases: HashSet::new(),
+            requires: HashSet::new(),
             variables: vec![],
             modules: HashMap::new(),
         }
@@ -73,8 +73,8 @@ pub fn build_module_index(module: &Module) -> Option<ModuleIndex> {
     };
 
     match module.body.as_ref() {
-        Expression::Scope(scope) => {
-            build_module_body_index(&scope.body, &mut index);
+        Expression::Block(block) => {
+            build_module_body_index(&block, &mut index);
             Some(index)
         }
         _ => None,
@@ -101,6 +101,18 @@ fn build_module_body_index(expressions: &Vec<Expression>, index: &mut ModuleInde
                     let mut scope = index.scope.borrow_mut();
                     scope.variables.extend(left_ids)
                 }
+            }
+            Expression::Alias(aliases) => {
+                let mut scope = index.scope.borrow_mut();
+                scope.aliases.extend(aliases.clone());
+            }
+            Expression::Require(requires) => {
+                let mut scope = index.scope.borrow_mut();
+                scope.requires.extend(requires.clone());
+            }
+            Expression::Import(imports) => {
+                let mut scope = index.scope.borrow_mut();
+                scope.imports.extend(imports.clone());
             }
             Expression::FunctionDef(function) => {
                 index.functions.push(FunctionIndex {
@@ -155,7 +167,16 @@ fn extract_identifiers(ast: &Expression) -> Vec<String> {
 
 fn do_extract_identifiers(ast: &Expression, buffer: &mut Vec<String>) {
     match ast {
-        // TODO: update here when we support lists, tuples, maps, and others
+        Expression::Block(block) => {
+            for expr in block {
+                do_extract_identifiers(expr, buffer);
+            }
+        }
+        Expression::Tuple(expressions) => {
+            for expr in expressions {
+                do_extract_identifiers(&expr, buffer);
+            }
+        }
         Expression::BinaryOperation(operation) => {
             do_extract_identifiers(&operation.left, buffer);
             do_extract_identifiers(&operation.right, buffer);
@@ -177,8 +198,8 @@ fn build_function_scope_index(
     };
 
     match ast {
-        Expression::Scope(Scope { body }) => {
-            for expression in body {
+        Expression::Block(block) => {
+            for expression in block {
                 parse_scope_expression(&expression, &mut scope);
             }
         }
@@ -209,23 +230,35 @@ fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
     use crate::{
-        indexer::{FunctionIndex, ScopeIndex},
+        indexer::{extract_identifiers, FunctionIndex, ScopeIndex},
         loc,
-        simple_parser::{Expression, Parser, Point},
+        simple_parser::{Expression, FunctionDef, Parser, Point},
     };
 
     use super::{build_module_index, ModuleIndex};
 
-    fn index(code: &str) -> ModuleIndex {
-        let parser = Parser::new(code.to_owned(), "nofile".to_owned());
-        if let Expression::Module(m) = parser.parse() {
+    fn index_module(code: &str) -> ModuleIndex {
+        if let Expression::Module(m) = parse(code) {
             build_module_index(&m).unwrap()
         } else {
             panic!("failed to parse module")
         }
+    }
+
+    fn parse_function(code: &str) -> FunctionDef {
+        if let Expression::FunctionDef(f) = parse(code) {
+            f
+        } else {
+            panic!("failed to parse module")
+        }
+    }
+
+    fn parse(code: &str) -> Expression {
+        let parser = Parser::new(code.to_owned(), "nofile".to_owned());
+        parser.parse()
     }
 
     #[test]
@@ -234,23 +267,42 @@ mod tests {
         defmodule MyModule do
             @moduledoc "this is a nice module!"
 
+            require Logger
+            import Ecto.Query
+            alias OtherModule
+            alias OtherModule.{A, B}
+
+            var = 10
+
             def func(a, b) do
                 a + b
             end
         end
         "#;
-        let result = index(code);
+        let result = index_module(code);
+        let parent_scope = Rc::new(RefCell::new(ScopeIndex {
+            imports: HashSet::from_iter(vec!["Ecto.Query".to_owned()]),
+            requires: HashSet::from_iter(vec!["Logger".to_owned()]),
+            aliases: HashSet::from_iter(vec![
+                "OtherModule".to_owned(),
+                "OtherModule.A".to_owned(),
+                "OtherModule.B".to_owned(),
+            ]),
+            variables: vec!["var".to_owned()],
+            ..ScopeIndex::default()
+        }));
         let target = ModuleIndex {
             name: "MyModule".to_owned(),
             docs: Some("this is a nice module!".to_owned()),
+            scope: parent_scope.clone(),
             functions: vec![FunctionIndex {
-                location: loc!(4, 16),
+                location: loc!(11, 16),
                 is_private: false,
                 name: "func".to_owned(),
                 doc: None,
                 spec: None,
                 scope: Rc::new(RefCell::new(ScopeIndex {
-                    parent: Some(Rc::new(RefCell::new(ScopeIndex::default()))),
+                    parent: Some(parent_scope),
                     ..ScopeIndex::default()
                 })),
             }],
@@ -261,109 +313,91 @@ mod tests {
     }
 
     #[test]
-    fn index_module_variables() {
-        let code = r#"
-        defmodule MyModule do
-            @moduledoc """
-            moduledoc
-            """
-
-            var = 10
-        end
-        "#;
-        let result = index(code);
-        let target = ModuleIndex {
-            name: "MyModule".to_owned(),
-            docs: Some("\n            moduledoc\n            ".to_owned()),
-            scope: Rc::new(RefCell::new(ScopeIndex {
-                variables: vec!["var".to_owned()],
-                ..Default::default()
-            })),
-            ..Default::default()
-        };
-
-        assert_eq!(result, target)
-    }
-
-    // Also make tests specific to the function that extracts variable names from scopes
-
-    // TODO: make tests only on the "function" indexer function so we avoid a lot of module boilerplate
-    // leave one test to test that the module scope is the parent of the function's scope
-    #[test]
-    fn index_function_variables() {
+    fn test_def_scope_gets_module_scope() {
         let code = r#"
         defmodule MyModule do
             @moduledoc false
 
+            parent_variable = 10
+
+            @doc "sums two numbers"
+            # TODO: parse spec @spec func(integer(), integer()) :: integer()
             def a do
-                in_func = 1
+            end
+
+            defp no_docs(_) do
+
             end
         end
         "#;
-        let result = index(code);
+        let result = index_module(code);
 
-        let parent_scope = Rc::new(RefCell::new(Default::default()));
+        let parent_scope = Rc::new(RefCell::new(ScopeIndex {
+            variables: vec!["parent_variable".to_owned()],
+            ..Default::default()
+        }));
 
         let target = ModuleIndex {
             name: "MyModule".to_owned(),
             docs: None,
             scope: parent_scope.clone(),
-            functions: vec![FunctionIndex {
-                location: loc!(4, 16),
-                is_private: false,
-                name: "a".to_string(),
-                doc: None,
-                spec: None,
-                scope: Rc::new(RefCell::new(ScopeIndex {
-                    variables: vec!["in_func".to_owned()],
-                    parent: Some(parent_scope),
-                    ..Default::default()
-                })),
-            }],
+            functions: vec![
+                FunctionIndex {
+                    location: loc!(8, 16),
+                    is_private: false,
+                    name: "a".to_string(),
+                    doc: Some("sums two numbers".to_string()),
+                    spec: None,
+                    scope: Rc::new(RefCell::new(ScopeIndex {
+                        parent: Some(parent_scope.clone()),
+                        ..Default::default()
+                    })),
+                },
+                FunctionIndex {
+                    location: loc!(11, 17),
+                    is_private: true,
+                    name: "no_docs".to_string(),
+                    doc: None,
+                    spec: None,
+                    scope: Rc::new(RefCell::new(ScopeIndex {
+                        parent: Some(parent_scope),
+                        ..Default::default()
+                    })),
+                },
+            ],
             ..Default::default()
         };
 
         assert_eq!(result, target)
     }
 
-    // #[test]
-    // fn index_function_docs_and_specs() {
-    //     let code = r#"
-    //     defmodule MyModule do
-    //         @doc "sums two numbers"
-    //         @spec func(integer(), integer()) :: integer()
-    //         defp func(a, b) do
-    //             a + b
-    //         end
+    #[test]
+    fn extract_variable_from_simple_match() {
+        let code = "
+        def a do
+            a = 1
+        end
+        ";
+        let func = parse_function(&code);
+        let result = extract_identifiers(&func.body);
+        let target = vec!["a".to_string()];
 
-    //         defp no_docs(_) do
+        assert_eq!(result, target)
+    }
 
-    //         end
-    //     end
-    //     "#;
-    //     let result = index(code);
-    //     let target = ModuleIndex {
-    //         name: "MyModule".to_owned(),
-    //         docs: None,
-    //         functions: vec![
-    //             FunctionIndex {
-    //                 is_private: true,
-    //                 name: "func".to_owned(),
-    //                 doc: Some("sums two numbers".to_string()),
-    //                 spec: None,
-    //             },
-    //             FunctionIndex {
-    //                 is_private: true,
-    //                 name: "no_docs".to_owned(),
-    //                 doc: None,
-    //                 spec: None,
-    //             },
-    //         ],
-    //         ..ModuleIndex::default()
-    //     };
+    #[test]
+    fn extract_variable_from_tuple_match() {
+        let code = "
+        def a do
+            {:ok, result} = {:ok, 10}
+        end
+        ";
+        let func = parse_function(&code);
+        let result = extract_identifiers(&func.body);
+        let target = vec!["result".to_string()];
 
-    //     assert_eq!(result, target)
-    // }
+        assert_eq!(result, target)
+    }
 
     // #[test]
     // fn index_module_types() {
