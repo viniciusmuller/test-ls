@@ -2859,42 +2859,6 @@
 //    }
 //}
 
-//fn try_parse_binary_operator_node(state: &PState, offset: usize) -> ParserResult<BinaryOperator> {
-//    let token = state.tokens[offset];
-//    let operator = token.grammar_name();
-//    match operator {
-//        "=" => Ok((BinaryOperator::Match, offset + 1)),
-//        "+" => Ok((BinaryOperator::Plus, offset + 1)),
-//        "-" => Ok((BinaryOperator::Minus, offset + 1)),
-//        "*" => Ok((BinaryOperator::Mult, offset + 1)),
-//        "**" => Ok((BinaryOperator::Pow, offset + 1)),
-//        "::" => Ok((BinaryOperator::Type, offset + 1)),
-//        "/" => Ok((BinaryOperator::Div, offset + 1)),
-//        "++" => Ok((BinaryOperator::ListConcatenation, offset + 1)),
-//        "--" => Ok((BinaryOperator::ListSubtraction, offset + 1)),
-//        "and" => Ok((BinaryOperator::StrictAnd, offset + 1)),
-//        "&&" => Ok((BinaryOperator::RelaxedAnd, offset + 1)),
-//        "or" => Ok((BinaryOperator::StrictOr, offset + 1)),
-//        "||" => Ok((BinaryOperator::RelaxedOr, offset + 1)),
-//        "in" => Ok((BinaryOperator::In, offset + 1)),
-//        "not in" => Ok((BinaryOperator::NotIn, offset + 1)),
-//        "<>" => Ok((BinaryOperator::BinaryConcat, offset + 1)),
-//        "|>" => Ok((BinaryOperator::Pipe, offset + 1)),
-//        "=~" => Ok((BinaryOperator::TextSearch, offset + 1)),
-//        "==" => Ok((BinaryOperator::Equal, offset + 1)),
-//        "===" => Ok((BinaryOperator::StrictEqual, offset + 1)),
-//        "!=" => Ok((BinaryOperator::NotEqual, offset + 1)),
-//        "!==" => Ok((BinaryOperator::StrictNotEqual, offset + 1)),
-//        "<" => Ok((BinaryOperator::LessThan, offset + 1)),
-//        ">" => Ok((BinaryOperator::GreaterThan, offset + 1)),
-//        "<=" => Ok((BinaryOperator::LessThanOrEqual, offset + 1)),
-//        ">=" => Ok((BinaryOperator::GreaterThanOrEqual, offset + 1)),
-//        r#"\\"# => Ok((BinaryOperator::Default, offset + 1)),
-//        unknown_operator => try_parse_custom_operator(&token, offset, unknown_operator)
-//            .map(|op| (BinaryOperator::Custom(op), offset + 1)),
-//    }
-//}
-
 //fn try_parse_range(state: &PState, offset: usize) -> ParserResult<Expression> {
 //    let (_, offset) = try_parse_grammar_name(state, offset, "binary_operator")?;
 

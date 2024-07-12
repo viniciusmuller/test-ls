@@ -41,10 +41,91 @@ pub struct Float(f64);
 
 impl Eq for Float {}
 
+/// Check https://hexdocs.pm/elixir/1.17.1/operators.html for more info
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum BinaryOperator {
+    /// +
+    Plus,
+    /// -
+    Minus,
+    /// /
+    Div,
+    /// *
+    Mult,
+    /// |
+    Union,
+    /// **
+    Pow,
+    /// ++
+    ListConcatenation,
+    /// --
+    ListSubtraction,
+    /// and
+    StrictAnd,
+    /// &&
+    RelaxedAnd,
+    /// or
+    StrictOr,
+    /// ||
+    RelaxedOr,
+    /// in
+    In,
+    /// not in
+    NotIn,
+    /// <>
+    BinaryConcat,
+    /// |>
+    Pipe,
+    /// =~
+    TextSearch,
+    /// ==
+    Equal,
+    /// ===
+    StrictEqual,
+    /// !=
+    NotEqual,
+    /// !==
+    StrictNotEqual,
+    /// <
+    LessThan,
+    /// >
+    GreaterThan,
+    /// <=
+    LessThanOrEqual,
+    /// >=
+    GreaterThanOrEqual,
+    // =
+    Match,
+    // \\
+    Default,
+    // ::
+    Type,
+    ///  Operators that are parsed and can be overriden by libraries.
+    ///  &&&
+    ///  <<<
+    ///  >>>
+    ///  <<~
+    ///  ~>>
+    ///  <~
+    ///  ~>
+    ///  <~>
+    ///  +++
+    ///  ---
+    Custom(String),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct BinaryOperation {
+    pub operator: BinaryOperator,
+    pub left: Box<Expression>,
+    pub right: Box<Expression>,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expression {
     Module(Module),
     FunctionDef(FunctionDef),
+    BinaryOperation(BinaryOperation),
     Attribute(String, Box<Expression>),
     String(String),
     Integer(usize),
@@ -63,6 +144,11 @@ impl Display for Expression {
             Expression::FunctionDef(function) => write!(f, "FunctionDef({})", function.name),
             Expression::Module(module) => write!(f, "Module({})", module.name),
             Expression::Attribute(name, _) => write!(f, "Attribute({})", name),
+            Expression::BinaryOperation(operation) => write!(
+                f,
+                "Binary({} {:?} {}}})",
+                operation.left, operation.operator, operation.right
+            ),
             Expression::Scope(_) => write!(f, "Scope()"),
             Expression::String(s) => write!(f, "String({})", s),
             Expression::Integer(i) => write!(f, "Integer({})", i),
@@ -107,7 +193,7 @@ impl Parser {
             build_module_index(&module);
         }
 
-        print_expression(&ast, 0);
+        // print_expression(&ast, 0);
         ast
     }
 
@@ -145,6 +231,7 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
         "call" => parse_call_node(parser, node),
         "string" => parse_string_node(parser, node),
         "atom" => parse_atom_node(parser, node),
+        "binary_operator" => do_parse_binary_operation_node(parser, node),
         "alias" => parse_module_name_node(parser, node),
         "integer" => parse_integer_node(parser, node),
         "float" => parse_float_node(parser, node),
@@ -153,6 +240,58 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
         "block" => parse_block_node(parser, node),
         _unknown => build_unparsed_node(parser, node),
     }
+}
+
+fn do_parse_binary_operation_node(parser: &Parser, node: &Node) -> Expression {
+    parse_binary_operation_node(parser, node).unwrap_or_else(|| build_unparsed_node(parser, node))
+}
+
+fn parse_binary_operation_node(parser: &Parser, node: &Node) -> Option<Expression> {
+    let left_node = node.child(0)?;
+    let left = parse_expression(parser, &left_node);
+    let operator_node = left_node.next_sibling()?;
+    let operator_name = operator_node.grammar_name();
+
+    let operator = match operator_name {
+        "=" => BinaryOperator::Match,
+        "+" => BinaryOperator::Plus,
+        "-" => BinaryOperator::Minus,
+        "*" => BinaryOperator::Mult,
+        "**" => BinaryOperator::Pow,
+        "::" => BinaryOperator::Type,
+        "/" => BinaryOperator::Div,
+        "++" => BinaryOperator::ListConcatenation,
+        "--" => BinaryOperator::ListSubtraction,
+        "and" => BinaryOperator::StrictAnd,
+        "&&" => BinaryOperator::RelaxedAnd,
+        "or" => BinaryOperator::StrictOr,
+        "||" => BinaryOperator::RelaxedOr,
+        "in" => BinaryOperator::In,
+        "not in" => BinaryOperator::NotIn,
+        "<>" => BinaryOperator::BinaryConcat,
+        "|>" => BinaryOperator::Pipe,
+        "|" => BinaryOperator::Union,
+        "=~" => BinaryOperator::TextSearch,
+        "==" => BinaryOperator::Equal,
+        "===" => BinaryOperator::StrictEqual,
+        "!=" => BinaryOperator::NotEqual,
+        "!==" => BinaryOperator::StrictNotEqual,
+        "<" => BinaryOperator::LessThan,
+        ">" => BinaryOperator::GreaterThan,
+        "<=" => BinaryOperator::LessThanOrEqual,
+        ">=" => BinaryOperator::GreaterThanOrEqual,
+        r#"\\"# => BinaryOperator::Default,
+        other => BinaryOperator::Custom(other.to_owned()),
+    };
+
+    let right_node = operator_node.next_sibling()?;
+    let right = parse_expression(parser, &right_node);
+
+    Some(Expression::BinaryOperation(BinaryOperation {
+        operator,
+        left: Box::new(left),
+        right: Box::new(right),
+    }))
 }
 
 fn parse_string_node(parser: &Parser, node: &Node) -> Expression {
@@ -467,6 +606,9 @@ fn print_expression(ast: &Expression, depth: usize) {
 
 #[cfg(test)]
 mod tests {
+    use crate::simple_parser::BinaryOperator;
+
+    use super::BinaryOperation;
     use super::Expression;
     use super::Float;
     use super::FunctionDef;
@@ -584,6 +726,17 @@ mod tests {
         };
     }
 
+    #[macro_export]
+    macro_rules! binary_operation {
+        ($left:expr, $operator:expr, $right:expr) => {
+            Expression::BinaryOperation(BinaryOperation {
+                operator: $operator,
+                left: Box::new($left),
+                right: Box::new($right),
+            })
+        };
+    }
+
     #[test]
     fn parse_identifier() {
         let code = "my_variable_name";
@@ -627,14 +780,8 @@ mod tests {
         let code = "(a = 1; a + 1)";
         let result = parse(code);
         let expected = scope!(vec![
-            unparsed!(
-                "binary_operator",
-                vec![id!("a"), unparsed!("=", vec![]), int!(1)]
-            ),
-            unparsed!(
-                "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), int!(1)]
-            ),
+            binary_operation!(id!("a"), BinaryOperator::Match, int!(1)),
+            binary_operation!(id!("a"), BinaryOperator::Plus, int!(1))
         ]);
         assert_eq!(result, expected)
     }
@@ -649,14 +796,8 @@ mod tests {
         ";
         let result = parse(code);
         let expected = scope!(vec![
-            unparsed!(
-                "binary_operator",
-                vec![id!("a"), unparsed!("=", vec![]), int!(1)]
-            ),
-            unparsed!(
-                "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), int!(1)]
-            ),
+            binary_operation!(id!("a"), BinaryOperator::Match, int!(1)),
+            binary_operation!(id!("a"), BinaryOperator::Plus, int!(1))
         ]);
         assert_eq!(result, expected)
     }
@@ -672,10 +813,7 @@ mod tests {
         let expected = def!(
             "public",
             vec![id!("a"), id!("b")],
-            unparsed!(
-                "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), id!("b")]
-            )
+            binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))
         );
         assert_eq!(result, expected)
     }
@@ -691,10 +829,7 @@ mod tests {
         let expected = defp!(
             "my_func",
             vec![id!("a"), id!("b")],
-            unparsed!(
-                "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), id!("b")]
-            )
+            binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))
         );
         assert_eq!(result, expected)
     }
@@ -710,10 +845,7 @@ mod tests {
         let expected = defp!(
             "my_func",
             vec![],
-            unparsed!(
-                "binary_operator",
-                vec![id!("a"), unparsed!("+", vec![]), id!("b")]
-            )
+            binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))
         );
         assert_eq!(result, expected);
 
@@ -862,6 +994,14 @@ mod tests {
         let code = "0.1e4";
         let result = parse(code);
         let expected = float!(1000.0);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_binary_match() {
+        let code = "a = 10";
+        let result = parse(code);
+        let expected = binary_operation!(id!("a"), BinaryOperator::Match, int!(10));
         assert_eq!(result, expected)
     }
 
