@@ -50,6 +50,9 @@ fn count_expression_modules(ast: &Expression) -> usize {
         Expression::Attribute(_, _) => 0,
         Expression::FunctionDef(function) => count_expression_modules(&function.body),
         Expression::String(_) => 0,
+        Expression::Integer(_) => 0,
+        Expression::Float(_) => 0,
+        Expression::Atom(_) => 0,
         Expression::Bool(_) => 0,
         Expression::Scope(scope) => scope
             .body
@@ -68,6 +71,9 @@ fn count_expression_functions(ast: &Expression) -> usize {
         Expression::Module(module) => count_expression_functions(&module.body),
         Expression::Attribute(_, _) => 0,
         Expression::String(_) => 0,
+        Expression::Atom(_) => 0,
+        Expression::Integer(_) => 0,
+        Expression::Float(_) => 0,
         Expression::Bool(_) => 0,
         Expression::FunctionDef(function) => 1 + count_expression_functions(&function.body),
         Expression::Scope(scope) => scope

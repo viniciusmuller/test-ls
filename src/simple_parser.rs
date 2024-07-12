@@ -36,12 +36,20 @@ pub struct Scope {
     pub body: Vec<Expression>,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct Float(f64);
+
+impl Eq for Float {}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expression {
     Module(Module),
     FunctionDef(FunctionDef),
     Attribute(String, Box<Expression>),
     String(String),
+    Integer(usize),
+    Float(Float),
+    Atom(String),
     Bool(bool),
     Scope(Scope),
     Identifier(String),
@@ -57,6 +65,9 @@ impl Display for Expression {
             Expression::Attribute(name, _) => write!(f, "Attribute({})", name),
             Expression::Scope(_) => write!(f, "Scope()"),
             Expression::String(s) => write!(f, "String({})", s),
+            Expression::Integer(i) => write!(f, "Integer({})", i),
+            Expression::Float(Float(fl)) => write!(f, "Float({})", fl),
+            Expression::Atom(a) => write!(f, "Atom({})", a),
             Expression::Bool(b) => write!(f, "Bool({})", b),
             Expression::Identifier(id) => write!(f, "Identifier({})", id),
             Expression::Unparsed(grammar_name, _) => write!(f, "Unparsed({})", grammar_name),
@@ -92,11 +103,11 @@ impl Parser {
         };
 
         // TODO: handle multiple modules in top level scope
-        // if let Expression::Module(ref module) = ast {
-        //     dbg!(build_module_index(&module));
-        // }
+        if let Expression::Module(ref module) = ast {
+            build_module_index(&module);
+        }
 
-        // print_expression(&ast, 0);
+        print_expression(&ast, 0);
         ast
     }
 
@@ -133,6 +144,10 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
         "identifier" => Expression::Identifier(parse_identifier_node(parser, node)),
         "call" => parse_call_node(parser, node),
         "string" => parse_string_node(parser, node),
+        "atom" => parse_atom_node(parser, node),
+        "alias" => parse_module_name_node(parser, node),
+        "integer" => parse_integer_node(parser, node),
+        "float" => parse_float_node(parser, node),
         "boolean" => parse_boolean_node(parser, node),
         "unary_operator" => parse_unary_operator(parser, node),
         "block" => parse_block_node(parser, node),
@@ -152,6 +167,40 @@ fn parse_string_node(parser: &Parser, node: &Node) -> Expression {
         .join("");
 
     Expression::String(string)
+}
+
+fn parse_atom_node(parser: &Parser, node: &Node) -> Expression {
+    let content = &parser.get_text(node)[1..];
+    Expression::Atom(content.to_string())
+}
+
+fn parse_integer_node(parser: &Parser, node: &Node) -> Expression {
+    let integer_text = &parser.get_text(node);
+    let integer_text = integer_text.replace('_', "");
+
+    let result = if let Some(stripped) = integer_text.strip_prefix("0b") {
+        usize::from_str_radix(stripped, 2).unwrap_or(0)
+    } else if let Some(stripped) = integer_text.strip_prefix("0x") {
+        usize::from_str_radix(stripped, 16).unwrap_or(0)
+    } else if let Some(stripped) = integer_text.strip_prefix("0o") {
+        usize::from_str_radix(stripped, 8).unwrap_or(0)
+    } else {
+        integer_text.parse::<usize>().unwrap_or(0)
+    };
+
+    Expression::Integer(result)
+}
+
+fn parse_float_node(parser: &Parser, node: &Node) -> Expression {
+    let float_text = &parser.get_text(node);
+    let float_text = float_text.replace('_', "");
+    let result = float_text.parse::<f64>().unwrap_or(0.0);
+    Expression::Float(Float(result))
+}
+
+fn parse_module_name_node(parser: &Parser, node: &Node) -> Expression {
+    let content = parser.get_text(node);
+    Expression::Atom(content)
 }
 
 fn parse_unary_operator(parser: &Parser, node: &Node) -> Expression {
@@ -243,12 +292,12 @@ fn try_parse_module_def_name(parser: &Parser, node: &Node) -> Option<String> {
 }
 
 fn try_parse_function_definition(parser: &Parser, node: &Node) -> Option<Expression> {
-    let child = node.child(0)?;
-    let caller = try_parse_either_identifier(parser, &child, &["def", "defp"])?;
+    let def_node = expect_child(node, "identifier")?;
+    let caller = try_parse_either_identifier(parser, &def_node, &["def", "defp"])?;
     let is_private = caller == "defp";
-    let def_arguments_node = child.next_sibling()?;
+    let def_arguments_node = expect_sibling(&def_node, "arguments")?;
     let (function_name, parameters) = try_parse_function_def(parser, &def_arguments_node)?;
-    let body_node = def_arguments_node.next_sibling()?;
+    let body_node = expect_sibling(&def_arguments_node, "do_block")?;
     let body = try_parse_do_block(parser, &body_node)?;
     let function = FunctionDef {
         is_private,
@@ -260,15 +309,35 @@ fn try_parse_function_definition(parser: &Parser, node: &Node) -> Option<Express
 }
 
 fn try_parse_function_def(parser: &Parser, node: &Node) -> Option<(String, Vec<Expression>)> {
-    let _ = try_parse_grammar_name(node, "arguments")?;
-    let call_node = node.child(0)?;
-    let _ = try_parse_grammar_name(&call_node, "call")?;
-    let func_name_node = call_node.child(0)?;
-    let function_name = parser.get_text(&func_name_node);
-    let parameters_arguments = func_name_node.next_sibling()?;
-    let _ = try_parse_grammar_name(&parameters_arguments, "arguments")?;
-    let parameters = parse_parameters(parser, &parameters_arguments);
-    Some((function_name, parameters))
+    let child = node.child(0)?;
+
+    match child.grammar_name() {
+        "identifier" => {
+            let function_name = parser.get_text(&child);
+            Some((function_name, vec![]))
+        }
+        _ => {
+            let call_node = expect_child(node, "call")?;
+            let func_name_node = call_node.child(0)?;
+            let function_name = parser.get_text(&func_name_node);
+            let parameters_arguments = func_name_node.next_sibling()?;
+            let _ = try_parse_grammar_name(&parameters_arguments, "arguments")?;
+            let parameters = parse_parameters(parser, &parameters_arguments);
+            Some((function_name, parameters))
+        }
+    }
+}
+
+fn expect_child<'a>(node: &'a Node, target: &str) -> Option<Node<'a>> {
+    let child = node.child(0)?;
+    let _ = try_parse_grammar_name(&child, target)?;
+    Some(child)
+}
+
+fn expect_sibling<'a>(node: &'a Node, target: &str) -> Option<Node<'a>> {
+    let child = node.next_sibling()?;
+    let _ = try_parse_grammar_name(&child, target)?;
+    Some(child)
 }
 
 fn parse_parameters(parser: &Parser, node: &Node) -> Vec<Expression> {
@@ -289,9 +358,7 @@ fn parse_parameters(parser: &Parser, node: &Node) -> Vec<Expression> {
 }
 
 fn try_parse_do_block(parser: &Parser, node: &Node) -> Option<Expression> {
-    let _ = try_parse_grammar_name(node, "do_block")?;
-    let child = node.child(0)?;
-    let _ = try_parse_grammar_name(&child, "do")?;
+    let child = expect_child(node, "do")?;
     let mut body = parse_sibilings_until_end(parser, &child)?;
     let body = normalize_block(&mut body);
     Some(body)
@@ -401,6 +468,7 @@ fn print_expression(ast: &Expression, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::Expression;
+    use super::Float;
     use super::FunctionDef;
     use super::Module;
     use super::Parser;
@@ -489,6 +557,27 @@ mod tests {
     }
 
     #[macro_export]
+    macro_rules! atom {
+        ($v:expr) => {
+            Expression::Atom($v.to_string())
+        };
+    }
+
+    #[macro_export]
+    macro_rules! int {
+        ($v:expr) => {
+            Expression::Integer($v)
+        };
+    }
+
+    #[macro_export]
+    macro_rules! float {
+        ($v:expr) => {
+            Expression::Float(Float($v))
+        };
+    }
+
+    #[macro_export]
     macro_rules! attribute {
         ($name:expr, $body:expr) => {
             Expression::Attribute($name.to_string(), Box::new($body))
@@ -540,19 +629,11 @@ mod tests {
         let expected = scope!(vec![
             unparsed!(
                 "binary_operator",
-                vec![
-                    id!("a"),
-                    unparsed!("=", vec![]),
-                    unparsed!("integer", vec![])
-                ]
+                vec![id!("a"), unparsed!("=", vec![]), int!(1)]
             ),
             unparsed!(
                 "binary_operator",
-                vec![
-                    id!("a"),
-                    unparsed!("+", vec![]),
-                    unparsed!("integer", vec![])
-                ]
+                vec![id!("a"), unparsed!("+", vec![]), int!(1)]
             ),
         ]);
         assert_eq!(result, expected)
@@ -570,19 +651,11 @@ mod tests {
         let expected = scope!(vec![
             unparsed!(
                 "binary_operator",
-                vec![
-                    id!("a"),
-                    unparsed!("=", vec![]),
-                    unparsed!("integer", vec![])
-                ]
+                vec![id!("a"), unparsed!("=", vec![]), int!(1)]
             ),
             unparsed!(
                 "binary_operator",
-                vec![
-                    id!("a"),
-                    unparsed!("+", vec![]),
-                    unparsed!("integer", vec![])
-                ]
+                vec![id!("a"), unparsed!("+", vec![]), int!(1)]
             ),
         ]);
         assert_eq!(result, expected)
@@ -626,6 +699,32 @@ mod tests {
         assert_eq!(result, expected)
     }
 
+    #[test]
+    fn parse_function_no_args() {
+        let code = "
+        defp my_func() do
+            a + b
+        end
+        ";
+        let result = parse(code);
+        let expected = defp!(
+            "my_func",
+            vec![],
+            unparsed!(
+                "binary_operator",
+                vec![id!("a"), unparsed!("+", vec![]), id!("b")]
+            )
+        );
+        assert_eq!(result, expected);
+
+        let code = "
+        defp my_func do
+            a + b
+        end
+        ";
+        let result = parse(code);
+        assert_eq!(result, expected)
+    }
     #[test]
     fn parse_attribute() {
         let code = r#"
@@ -694,5 +793,79 @@ mod tests {
         assert_eq!(result, expected)
     }
 
-    // TODO: parse basic types like floats, ints, atoms
+    #[test]
+    fn parse_atom() {
+        let code = ":custom_atom";
+        let result = parse(code);
+        let expected = atom!("custom_atom");
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_module_name() {
+        let code = "ModuleName";
+        let result = parse(code);
+        let expected = atom!("ModuleName");
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_integers() {
+        let code = "10";
+        let result = parse(code);
+        let expected = int!(10);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_integers_underscored() {
+        let code = "1_000";
+        let result = parse(code);
+        let expected = int!(1000);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_integers_hex() {
+        let code = "0x777";
+        let result = parse(code);
+        let expected = int!(0x777);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_integers_binary() {
+        let code = "0b011001";
+        let result = parse(code);
+        let expected = int!(0b011001);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_integers_octal() {
+        let code = "0o721";
+        let result = parse(code);
+        let expected = int!(0o721);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_float() {
+        let code = "10.0";
+        let result = parse(code);
+        let expected = float!(10.0);
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_float_scientific() {
+        let code = "0.1e4";
+        let result = parse(code);
+        let expected = float!(1000.0);
+        assert_eq!(result, expected)
+    }
+
+    // TODO: parse @type as TypeAttribute with expr body
+    // TODO: parse calls
+    // TODO: parse binary operators to have the concept of match for the indexer to analyze
 }
