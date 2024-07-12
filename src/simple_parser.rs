@@ -13,8 +13,8 @@ pub struct TSError {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct Point {
-    line: usize,
-    column: usize,
+    pub line: usize,
+    pub column: usize,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -29,6 +29,7 @@ pub struct FunctionDef {
     pub is_private: bool,
     pub parameters: Vec<Expression>,
     pub body: Box<Expression>,
+    pub location: Point,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -127,6 +128,11 @@ pub enum Expression {
     FunctionDef(FunctionDef),
     BinaryOperation(BinaryOperation),
     Attribute(String, Box<Expression>),
+    Tuple(Vec<Expression>),
+    Use(Vec<String>),
+    Require(Vec<String>),
+    Import(Vec<String>),
+    Alias(Vec<String>),
     String(String),
     Integer(usize),
     Float(Float),
@@ -144,6 +150,11 @@ impl Display for Expression {
             Expression::FunctionDef(function) => write!(f, "FunctionDef({})", function.name),
             Expression::Module(module) => write!(f, "Module({})", module.name),
             Expression::Attribute(name, _) => write!(f, "Attribute({})", name),
+            Expression::Use(exprs) => write!(f, "Use({})", exprs.join(", ")),
+            Expression::Tuple(_exprs) => write!(f, "Tuple()"),
+            Expression::Import(exprs) => write!(f, "Use({})", exprs.join(", ")),
+            Expression::Alias(exprs) => write!(f, "Use({})", exprs.join(", ")),
+            Expression::Require(exprs) => write!(f, "Use({})", exprs.join(", ")),
             Expression::BinaryOperation(operation) => write!(
                 f,
                 "Binary({} {:?} {}}})",
@@ -188,12 +199,13 @@ impl Parser {
             expr => expr,
         };
 
+        // print_expression(&ast, 0);
+
         // TODO: handle multiple modules in top level scope
         if let Expression::Module(ref module) = ast {
             build_module_index(&module);
         }
 
-        // print_expression(&ast, 0);
         ast
     }
 
@@ -231,6 +243,7 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
         "call" => parse_call_node(parser, node),
         "string" => parse_string_node(parser, node),
         "atom" => parse_atom_node(parser, node),
+        "tuple" => parse_tuple_node(parser, node),
         "binary_operator" => do_parse_binary_operation_node(parser, node),
         "alias" => parse_module_name_node(parser, node),
         "integer" => parse_integer_node(parser, node),
@@ -240,6 +253,19 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
         "block" => parse_block_node(parser, node),
         _unknown => build_unparsed_node(parser, node),
     }
+}
+
+fn parse_tuple_node(parser: &Parser, node: &Node) -> Expression {
+    let mut cursor = node.walk();
+    let children = node.children(&mut cursor);
+
+    let body = children
+        .into_iter()
+        .filter(|n| try_parse_either_grammar_name(&n, &["{", ",", "}"]).is_none())
+        .map(|n| parse_expression(parser, &n))
+        .collect::<Vec<_>>();
+
+    Expression::Tuple(body)
 }
 
 fn do_parse_binary_operation_node(parser: &Parser, node: &Node) -> Expression {
@@ -357,7 +383,21 @@ fn parse_identifier_node(parser: &Parser, node: &Node) -> String {
 fn parse_call_node(parser: &Parser, node: &Node) -> Expression {
     try_parse_module(parser, node)
         .or_else(|| try_parse_function_definition(parser, node))
+        .or_else(|| try_parse_alias_node(parser, node))
+        // .or_else(|| try_parse_require(parser, node))
+        // .or_else(|| try_parse_import(parser, node))
+        // .or_else(|| try_parse_use(parser, node))
         .unwrap_or_else(|| build_unparsed_node(parser, node))
+}
+
+fn try_parse_alias_node(parser: &Parser, node: &Node) -> Option<Expression> {
+    let alias_node = expect_child(node, "identifier")?;
+    try_parse_either_identifier(parser, &alias_node, &["alias"])?;
+
+    let alias_args_node = expect_sibling(&alias_node, "arguments")?;
+    let atom_node = expect_child(&alias_args_node, "alias")?;
+    let content = parser.get_text(&atom_node);
+    Some(Expression::Alias(vec![content]))
 }
 
 fn parse_block_node(parser: &Parser, node: &Node) -> Expression {
@@ -374,7 +414,7 @@ fn parse_block_node(parser: &Parser, node: &Node) -> Expression {
         result.push(parse_expression(parser, &child))
     }
 
-    normalize_block(&mut result)
+    Expression::Scope(Scope { body: result })
 }
 
 fn build_unparsed_node(parser: &Parser, node: &Node) -> Expression {
@@ -426,7 +466,7 @@ fn try_parse_module(parser: &Parser, node: &Node) -> Option<Expression> {
 fn try_parse_module_def_name(parser: &Parser, node: &Node) -> Option<String> {
     let _ = try_parse_grammar_name(node, "arguments")?;
     let child = node.child(0)?;
-    let alias = try_parse_alias(parser, &child);
+    let alias = try_parse_alias_grammar_name(parser, &child);
     alias
 }
 
@@ -439,6 +479,7 @@ fn try_parse_function_definition(parser: &Parser, node: &Node) -> Option<Express
     let body_node = expect_sibling(&def_arguments_node, "do_block")?;
     let body = try_parse_do_block(parser, &body_node)?;
     let function = FunctionDef {
+        location: tree_sitter_location_to_point(def_arguments_node.start_position()),
         is_private,
         parameters,
         name: function_name.to_string(),
@@ -498,9 +539,8 @@ fn parse_parameters(parser: &Parser, node: &Node) -> Vec<Expression> {
 
 fn try_parse_do_block(parser: &Parser, node: &Node) -> Option<Expression> {
     let child = expect_child(node, "do")?;
-    let mut body = parse_sibilings_until_end(parser, &child)?;
-    let body = normalize_block(&mut body);
-    Some(body)
+    let body = parse_sibilings_until_end(parser, &child)?;
+    Some(Expression::Scope(Scope { body }))
 }
 
 fn parse_sibilings_until_end(parser: &Parser, node: &Node) -> Option<Vec<Expression>> {
@@ -526,6 +566,16 @@ fn try_parse_grammar_name<'a>(node: &'a Node, target: &str) -> Option<&'a Node<'
     } else {
         None
     }
+}
+
+fn try_parse_either_grammar_name<'a>(node: &'a Node, target: &[&'a str]) -> Option<&'a str> {
+    for t in target {
+        if try_parse_grammar_name(node, t).is_some() {
+            return Some(t);
+        }
+    }
+
+    None
 }
 
 fn try_parse_either_identifier<'a>(
@@ -554,7 +604,7 @@ fn try_parse_specific_identifier<'a>(
     }
 }
 
-fn try_parse_alias(parser: &Parser, node: &Node) -> Option<String> {
+fn try_parse_alias_grammar_name(parser: &Parser, node: &Node) -> Option<String> {
     if node.grammar_name() == "alias" {
         Some(parser.get_text(node))
     } else {
@@ -614,6 +664,7 @@ mod tests {
     use super::FunctionDef;
     use super::Module;
     use super::Parser;
+    use super::Point;
     use super::Scope;
 
     fn parse(code: &str) -> Expression {
@@ -659,11 +710,22 @@ mod tests {
         };
     }
 
+    #[macro_export]
+    macro_rules! loc {
+        ($line:expr, $col:expr) => {
+            Point {
+                line: $line,
+                column: $col,
+            }
+        };
+    }
+
     // TODO: reuse code along these two def/defp macros
     #[macro_export]
     macro_rules! def {
-        ($name:expr, $params:expr, $body:expr) => {
+        ($name:expr, $params:expr, $body:expr, $location:expr) => {
             Expression::FunctionDef(FunctionDef {
+                location: $location,
                 is_private: false,
                 name: $name.to_string(),
                 parameters: $params,
@@ -674,8 +736,9 @@ mod tests {
 
     #[macro_export]
     macro_rules! defp {
-        ($name:expr, $params:expr, $body:expr) => {
+        ($name:expr, $params:expr, $body:expr, $location:expr) => {
             Expression::FunctionDef(FunctionDef {
+                location: $location,
                 is_private: true,
                 name: $name.to_string(),
                 parameters: $params,
@@ -735,6 +798,20 @@ mod tests {
                 right: Box::new($right),
             })
         };
+    }
+
+    #[macro_export]
+    macro_rules! alias {
+         ( $( $arg:expr ),* ) => {
+             Expression::Alias(vec![$($arg.to_owned(),)*])
+         };
+    }
+
+    #[macro_export]
+    macro_rules! tuple {
+         ( $( $arg:expr ),* ) => {
+             Expression::Tuple(vec![$($arg,)*])
+         };
     }
 
     #[test]
@@ -813,7 +890,12 @@ mod tests {
         let expected = def!(
             "public",
             vec![id!("a"), id!("b")],
-            binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))
+            scope!(vec![binary_operation!(
+                id!("a"),
+                BinaryOperator::Plus,
+                id!("b")
+            )]),
+            loc!(1, 12)
         );
         assert_eq!(result, expected)
     }
@@ -829,7 +911,12 @@ mod tests {
         let expected = defp!(
             "my_func",
             vec![id!("a"), id!("b")],
-            binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))
+            scope!(vec![binary_operation!(
+                id!("a"),
+                BinaryOperator::Plus,
+                id!("b")
+            )]),
+            loc!(1, 13)
         );
         assert_eq!(result, expected)
     }
@@ -845,7 +932,12 @@ mod tests {
         let expected = defp!(
             "my_func",
             vec![],
-            binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))
+            scope!(vec![binary_operation!(
+                id!("a"),
+                BinaryOperator::Plus,
+                id!("b")
+            )]),
+            loc!(1, 13)
         );
         assert_eq!(result, expected);
 
@@ -1000,6 +1092,62 @@ mod tests {
     #[test]
     fn parse_binary_match() {
         let code = "a = 10";
+        let result = parse(code);
+        let expected = binary_operation!(id!("a"), BinaryOperator::Match, int!(10));
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_tuple() {
+        let code = r#"{:ok, :success}"#;
+        let result = parse(code);
+        let expected = tuple!(atom!("ok"), atom!("success"));
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_tuple_trailing_comma() {
+        let code = "{1, 2, 3,}";
+        let result = parse(code);
+        let expected = tuple!(int!(1), int!(2), int!(3));
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_multi_alias() {
+        let code = "alias MySystem.{Queries, Entities}";
+        let result = parse(code);
+        let expected = alias!("MySystem.Queries", "MySystem.Entities");
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_alias() {
+        let code = "alias MyModule";
+        let result = parse(code);
+        let expected = alias!("MyModule");
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_import() {
+        let code = "import Ecto.Query";
+        let result = parse(code);
+        let expected = binary_operation!(id!("a"), BinaryOperator::Match, int!(10));
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_require() {
+        let code = "require Logger";
+        let result = parse(code);
+        let expected = binary_operation!(id!("a"), BinaryOperator::Match, int!(10));
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_use() {
+        let code = "use Oban.Worker";
         let result = parse(code);
         let expected = binary_operation!(id!("a"), BinaryOperator::Match, int!(10));
         assert_eq!(result, expected)

@@ -51,12 +51,19 @@ fn count_expression_modules(ast: &Expression) -> usize {
         Expression::FunctionDef(function) => count_expression_modules(&function.body),
         Expression::String(_) => 0,
         Expression::BinaryOperation(_) => 0,
+        Expression::Alias(_) => 0,
+        Expression::Require(_) => 0,
+        Expression::Use(_) => 0,
+        Expression::Import(_) => 0,
         Expression::Integer(_) => 0,
         Expression::Float(_) => 0,
         Expression::Atom(_) => 0,
         Expression::Bool(_) => 0,
         Expression::Scope(scope) => scope
             .body
+            .iter()
+            .fold(0, |acc, expr| acc + count_expression_modules(&expr)),
+        Expression::Tuple(body) => body
             .iter()
             .fold(0, |acc, expr| acc + count_expression_modules(&expr)),
         Expression::Identifier(_) => 0,
@@ -74,10 +81,17 @@ fn count_expression_functions(ast: &Expression) -> usize {
         Expression::String(_) => 0,
         Expression::BinaryOperation(_) => 0,
         Expression::Atom(_) => 0,
+        Expression::Alias(_) => 0,
+        Expression::Require(_) => 0,
+        Expression::Use(_) => 0,
+        Expression::Import(_) => 0,
         Expression::Integer(_) => 0,
         Expression::Float(_) => 0,
         Expression::Bool(_) => 0,
         Expression::FunctionDef(function) => 1 + count_expression_functions(&function.body),
+        Expression::Tuple(body) => body
+            .iter()
+            .fold(0, |acc, expr| acc + count_expression_functions(&expr)),
         Expression::Scope(scope) => scope
             .body
             .iter()

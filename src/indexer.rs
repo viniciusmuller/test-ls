@@ -1,24 +1,29 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use crate::simple_parser::{BinaryOperator, Expression, Module};
+use crate::simple_parser::{BinaryOperator, Expression, Module, Point, Scope};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct FunctionIndex {
+    location: Point,
     is_private: bool,
     name: String,
     doc: Option<String>,
     spec: Option<Expression>,
-    scope: ScopeIndex,
+    scope: Rc<RefCell<ScopeIndex>>,
     // TODO: probably will need to store function body to be able to compute lambda scopes
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ModuleIndex {
+    // location: Point,
     name: String,
     docs: Option<String>,
-    scope: ScopeIndex,
+    scope: Rc<RefCell<ScopeIndex>>,
     attributes: Vec<(String, Expression)>,
     types: Vec<(String, Expression)>,
+    // TODO: group function clauses into a single function structure by name and arity
     functions: Vec<FunctionIndex>,
     macros: Vec<String>,
 }
@@ -26,8 +31,9 @@ pub struct ModuleIndex {
 impl Default for ModuleIndex {
     fn default() -> Self {
         Self {
+            // location: Point { line: 1, column: 0 },
             docs: None,
-            scope: ScopeIndex::default(),
+            scope: Rc::new(RefCell::new(ScopeIndex::default())),
             attributes: vec![],
             functions: vec![],
             types: vec![],
@@ -39,7 +45,7 @@ impl Default for ModuleIndex {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ScopeIndex {
-    parent: Option<Box<ScopeIndex>>,
+    parent: Option<Rc<RefCell<ScopeIndex>>>,
     imports: Vec<String>,
     aliases: Vec<String>,
     requires: Vec<String>,
@@ -85,26 +91,28 @@ fn build_module_body_index(expressions: &Vec<Expression>, index: &mut ModuleInde
                 let boxed = Box::new(module);
 
                 if let Some(indexed_module) = build_module_index(boxed.as_ref()) {
-                    index
-                        .scope
-                        .modules
-                        .insert(module.name.to_owned(), indexed_module);
+                    let mut scope = index.scope.borrow_mut();
+                    scope.modules.insert(module.name.to_owned(), indexed_module);
                 }
             }
             Expression::BinaryOperation(operation) => {
                 if operation.operator == BinaryOperator::Match {
-                    // TODO: extract all identifiers from left and extend onto our array
                     let left_ids = extract_identifiers(&operation.left);
-                    index.scope.variables.extend(left_ids)
+                    let mut scope = index.scope.borrow_mut();
+                    scope.variables.extend(left_ids)
                 }
             }
             Expression::FunctionDef(function) => {
                 index.functions.push(FunctionIndex {
+                    location: function.location.clone(),
                     is_private: function.is_private,
                     name: function.name.to_owned(),
                     doc: last_doc.clone(),
                     spec: last_spec.clone(),
-                    scope: build_function_scope_index(&function.body),
+                    scope: Rc::new(RefCell::new(build_function_scope_index(
+                        &function.body,
+                        Some(index.scope.clone()),
+                    ))),
                 });
 
                 if last_doc.is_some() {
@@ -159,24 +167,54 @@ fn do_extract_identifiers(ast: &Expression, buffer: &mut Vec<String>) {
     }
 }
 
-// TODO: tricky question here: if we want to store the parent scope represented as a value, we
-// first need to calculate its entire scope
-//
-// I would prefer holding a reference to the actual parent scope as a pointer
-// but I need to see if rust actually allows me to do that without any divine punishment inflicted
-// by the borrow checker
-fn build_function_scope_index(ast: &Expression) -> ScopeIndex {
+fn build_function_scope_index(
+    ast: &Expression,
+    parent: Option<Rc<RefCell<ScopeIndex>>>,
+) -> ScopeIndex {
+    let mut scope = ScopeIndex {
+        parent,
+        ..ScopeIndex::default()
+    };
+
     match ast {
-        Expression::Scope(_) => ScopeIndex::default(),
-        _ => ScopeIndex::default(),
+        Expression::Scope(Scope { body }) => {
+            for expression in body {
+                parse_scope_expression(&expression, &mut scope);
+            }
+        }
+        _ => {}
+    };
+
+    scope
+}
+
+fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
+    match expression {
+        Expression::Module(module) => {
+            let boxed = Box::new(module);
+
+            if let Some(indexed_module) = build_module_index(boxed.as_ref()) {
+                scope.modules.insert(module.name.to_owned(), indexed_module);
+            }
+        }
+        Expression::BinaryOperation(operation) => {
+            if operation.operator == BinaryOperator::Match {
+                let left_ids = extract_identifiers(&operation.left);
+                scope.variables.extend(left_ids)
+            }
+        }
+        _ => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
     use crate::{
         indexer::{FunctionIndex, ScopeIndex},
-        simple_parser::{Expression, Parser},
+        loc,
+        simple_parser::{Expression, Parser, Point},
     };
 
     use super::{build_module_index, ModuleIndex};
@@ -206,11 +244,15 @@ mod tests {
             name: "MyModule".to_owned(),
             docs: Some("this is a nice module!".to_owned()),
             functions: vec![FunctionIndex {
+                location: loc!(4, 16),
                 is_private: false,
                 name: "func".to_owned(),
                 doc: None,
                 spec: None,
-                scope: ScopeIndex::default(),
+                scope: Rc::new(RefCell::new(ScopeIndex {
+                    parent: Some(Rc::new(RefCell::new(ScopeIndex::default()))),
+                    ..ScopeIndex::default()
+                })),
             }],
             ..ModuleIndex::default()
         };
@@ -218,13 +260,6 @@ mod tests {
         assert_eq!(result, target)
     }
 
-    // TODO: we probably don't want to normalize blocks for modules
-    // if they have a single expression even though it might be something important, we end up
-    // inlining it and not making it easy to index the module
-    // eg
-    //  defmodule MyModule do
-    //      var = 10
-    //  end
     #[test]
     fn index_module_variables() {
         let code = r#"
@@ -240,10 +275,51 @@ mod tests {
         let target = ModuleIndex {
             name: "MyModule".to_owned(),
             docs: Some("\n            moduledoc\n            ".to_owned()),
-            scope: ScopeIndex {
+            scope: Rc::new(RefCell::new(ScopeIndex {
                 variables: vec!["var".to_owned()],
                 ..Default::default()
-            },
+            })),
+            ..Default::default()
+        };
+
+        assert_eq!(result, target)
+    }
+
+    // Also make tests specific to the function that extracts variable names from scopes
+
+    // TODO: make tests only on the "function" indexer function so we avoid a lot of module boilerplate
+    // leave one test to test that the module scope is the parent of the function's scope
+    #[test]
+    fn index_function_variables() {
+        let code = r#"
+        defmodule MyModule do
+            @moduledoc false
+
+            def a do
+                in_func = 1
+            end
+        end
+        "#;
+        let result = index(code);
+
+        let parent_scope = Rc::new(RefCell::new(Default::default()));
+
+        let target = ModuleIndex {
+            name: "MyModule".to_owned(),
+            docs: None,
+            scope: parent_scope.clone(),
+            functions: vec![FunctionIndex {
+                location: loc!(4, 16),
+                is_private: false,
+                name: "a".to_string(),
+                doc: None,
+                spec: None,
+                scope: Rc::new(RefCell::new(ScopeIndex {
+                    variables: vec!["in_func".to_owned()],
+                    parent: Some(parent_scope),
+                    ..Default::default()
+                })),
+            }],
             ..Default::default()
         };
 
