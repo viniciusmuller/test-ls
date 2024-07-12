@@ -21,6 +21,7 @@ pub struct Point {
 pub struct Module {
     pub name: String,
     pub body: Box<Expression>,
+    pub location: Point,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -488,24 +489,20 @@ fn try_parse_attribute(parser: &Parser, node: &Node) -> Option<Expression> {
 }
 
 fn try_parse_module(parser: &Parser, node: &Node) -> Option<Expression> {
-    let child = node.child(0)?;
-    let _ = try_parse_specific_identifier(parser, &child, "defmodule")?;
-    let child = child.next_sibling()?;
-    let module_name = try_parse_module_def_name(parser, &child)?;
-    let child = child.next_sibling()?;
+    let defmodule_node = node.child(0)?;
+    let _ = try_parse_specific_identifier(parser, &defmodule_node, "defmodule")?;
+    let name_args_node = defmodule_node.next_sibling()?;
+    let _ = try_parse_grammar_name(&name_args_node, "arguments")?;
+    let name_node = name_args_node.child(0)?;
+    let module_name = try_parse_alias_grammar_name(parser, &name_node)?;
+    let child = name_args_node.next_sibling()?;
     let body = try_parse_do_block(parser, &child)?;
     let module = Module {
         name: module_name.to_string(),
         body: Box::new(body),
+        location: tree_sitter_location_to_point(name_node.start_position()),
     };
     Some(Expression::Module(module))
-}
-
-fn try_parse_module_def_name(parser: &Parser, node: &Node) -> Option<String> {
-    let _ = try_parse_grammar_name(node, "arguments")?;
-    let child = node.child(0)?;
-    let alias = try_parse_alias_grammar_name(parser, &child);
-    alias
 }
 
 fn try_parse_function_definition(parser: &Parser, node: &Node) -> Option<Expression> {
@@ -739,8 +736,9 @@ mod tests {
 
     #[macro_export]
     macro_rules! module {
-        ($name:expr, $body:expr) => {
+        ($name:expr, $body:expr, $loc:expr) => {
             Expression::Module(Module {
+                location: $loc,
                 name: $name.to_string(),
                 body: Box::new($body),
             })
@@ -906,7 +904,7 @@ mod tests {
         end
         ";
         let result = parse(code);
-        let expected = module!("MyModule", block!());
+        let expected = module!("MyModule", block!(), loc!(1, 18));
         assert_eq!(result, expected)
     }
 

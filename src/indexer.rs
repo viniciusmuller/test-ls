@@ -17,7 +17,7 @@ pub struct FunctionIndex {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ModuleIndex {
-    // location: Point,
+    location: Point,
     name: String,
     docs: Option<String>,
     scope: Rc<RefCell<ScopeIndex>>,
@@ -31,7 +31,7 @@ pub struct ModuleIndex {
 impl Default for ModuleIndex {
     fn default() -> Self {
         Self {
-            // location: Point { line: 1, column: 0 },
+            location: Point { line: 1, column: 0 },
             docs: None,
             scope: Rc::new(RefCell::new(ScopeIndex::default())),
             attributes: vec![],
@@ -68,6 +68,7 @@ impl Default for ScopeIndex {
 
 pub fn build_module_index(module: &Module) -> Option<ModuleIndex> {
     let mut index = ModuleIndex {
+        location: module.location.clone(),
         name: module.name.to_owned(),
         ..ModuleIndex::default()
     };
@@ -292,6 +293,7 @@ mod tests {
             ..ScopeIndex::default()
         }));
         let target = ModuleIndex {
+            location: loc!(1, 18),
             name: "MyModule".to_owned(),
             docs: Some("this is a nice module!".to_owned()),
             scope: parent_scope.clone(),
@@ -338,6 +340,7 @@ mod tests {
         }));
 
         let target = ModuleIndex {
+            location: loc!(1, 18),
             name: "MyModule".to_owned(),
             docs: None,
             scope: parent_scope.clone(),
