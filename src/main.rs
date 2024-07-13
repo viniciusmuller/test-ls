@@ -4,18 +4,25 @@ mod simple_parser;
 
 use std::{
     env,
+    error::Error,
     ffi::OsStr,
     fs,
     time::{Duration, Instant},
 };
 
-use indexer::{Index, ModuleIndex};
+use indexer::Index;
+use project_name::server;
 use walkdir::WalkDir;
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
+fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    let args: Vec<String> = env::args().into_iter().collect::<Vec<_>>();
+    let cwd = env::current_dir()
+        .unwrap()
+        .into_os_string()
+        .into_string()
+        .unwrap();
 
-    let paths = &[&args[1]]; // fs::read_dir(&args[1]).unwrap();
+    let paths = &[args.get(1).unwrap_or_else(|| &cwd)]; // fs::read_dir(&args[1]).unwrap();
 
     for path in paths {
         let now = Instant::now();
@@ -30,15 +37,18 @@ fn main() {
         }
 
         let all_modules_index = results.iter().map(|(_, m, _)| m).flatten();
-        let total_functions = all_modules_index.clone().fold(0, |acc, index| {
-            acc + index.module.functions.len()
-        });
+        let total_functions = all_modules_index
+            .clone()
+            .fold(0, |acc, index| acc + index.module.functions.len());
 
         println!("finished indexing: {} files", results.len());
         println!("Indexed {} modules", all_modules_index.count());
         println!("Indexed {} functions", total_functions);
         println!("Total reading + parsing time: {:.2?}", total_elapsed);
     }
+
+    server::start_server()?;
+    Ok(())
 }
 
 fn walkdir(path: &str) -> Vec<(String, Vec<Index>, Duration)> {
