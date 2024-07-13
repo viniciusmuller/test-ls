@@ -119,12 +119,19 @@ pub struct BinaryOperation {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub struct List {
+    pub body: Vec<Expression>,
+    pub cons: Option<Box<Expression>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expression {
     Module(Module),
     FunctionDef(FunctionDef),
     BinaryOperation(BinaryOperation),
     Attribute(String, Box<Expression>),
     Tuple(Vec<Expression>),
+    List(List),
     Use(Vec<String>),
     Require(Vec<String>),
     Import(Vec<String>),
@@ -148,6 +155,7 @@ impl Display for Expression {
             Expression::Attribute(name, _) => write!(f, "Attribute({})", name),
             Expression::Use(exprs) => write!(f, "Use({})", exprs.join(", ")),
             Expression::Tuple(_exprs) => write!(f, "Tuple()"),
+            Expression::List(_exprs) => write!(f, "List()"),
             Expression::Import(exprs) => write!(f, "Use({})", exprs.join(", ")),
             Expression::Alias(exprs) => write!(f, "Use({})", exprs.join(", ")),
             Expression::Require(exprs) => write!(f, "Use({})", exprs.join(", ")),
@@ -237,6 +245,7 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
         "string" => parse_string_node(parser, node),
         "atom" => parse_atom_node(parser, node),
         "tuple" => parse_tuple_node(parser, node),
+        "list" => parse_list_node(parser, node),
         "binary_operator" => do_parse_binary_operation_node(parser, node),
         "alias" => parse_module_name_node(parser, node),
         "integer" => parse_integer_node(parser, node),
@@ -259,6 +268,34 @@ fn parse_tuple_node(parser: &Parser, node: &Node) -> Expression {
         .collect::<Vec<_>>();
 
     Expression::Tuple(body)
+}
+
+fn parse_list_node(parser: &Parser, node: &Node) -> Expression {
+    let mut cursor = node.walk();
+    let mut list = List {
+        body: vec![],
+        cons: None,
+    };
+
+    for n in node.children(&mut cursor) {
+        if let Some(_) = try_parse_either_grammar_name(&n, &["[", ",", "]"]) {
+            continue;
+        }
+
+        match parse_expression(parser, &n) {
+            Expression::BinaryOperation(BinaryOperation {
+                left,
+                operator: BinaryOperator::Union,
+                right,
+            }) => {
+                list.body.push(*left);
+                list.cons = Some(right);
+            }
+            expr => list.body.push(expr),
+        }
+    }
+
+    Expression::List(list)
 }
 
 fn do_parse_binary_operation_node(parser: &Parser, node: &Node) -> Expression {
@@ -691,12 +728,14 @@ fn print_expression(ast: &Expression, depth: usize) {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
     use crate::simple_parser::BinaryOperator;
 
     use super::BinaryOperation;
     use super::Expression;
     use super::Float;
     use super::FunctionDef;
+    use super::List;
     use super::Module;
     use super::Parser;
     use super::Point;
@@ -867,6 +906,16 @@ mod tests {
     macro_rules! tuple {
          ( $( $arg:expr ),* ) => {
              Expression::Tuple(vec![$($arg,)*])
+         };
+    }
+
+    #[macro_export]
+    macro_rules! list {
+         ( $( $arg:expr ),* ) => {
+             Expression::List(List {
+                body: vec![$($arg,)*],
+                cons: None
+             })
          };
     }
 
@@ -1142,6 +1191,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_empty_tuple() {
+        let code = r#"{}"#;
+        let result = parse(code);
+        let expected = tuple!();
+        assert_eq!(result, expected)
+    }
+
+    #[test]
     fn parse_tuple() {
         let code = r#"{:ok, :success}"#;
         let result = parse(code);
@@ -1197,8 +1254,44 @@ mod tests {
         assert_eq!(result, expected)
     }
 
+    #[test]
+    fn parse_empty_list() {
+        let code = "[]";
+        let result = parse(code);
+        let expected = list!();
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_list() {
+        let code = "[:atom, 1, 2]";
+        let result = parse(code);
+        let expected = list!(atom!("atom"), int!(1), int!(2));
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_list_trailing_comma() {
+        let code = "[1, 2, 3, 4,]";
+        let result = parse(code);
+        let expected = list!(int!(1), int!(2), int!(3), int!(4));
+        assert_eq!(result, expected)
+    }
+
+    #[test]
+    fn parse_list_cons() {
+        let code = "[:atom, 1, 2 | rest]";
+        let result = parse(code);
+        let expected = Expression::List(List {
+            body: vec![atom!("atom"), int!(1), int!(2)],
+            cons: Some(Box::new(id!("rest"))),
+        });
+        assert_eq!(result, expected)
+    }
+
     // TODO: parse do block in keyword form for functions and other structures
 
+    // TODO: parse maps
     // TODO: parse major control structures: if, cond, case, with
 
     // TODO: parse @type as TypeAttribute with expr body

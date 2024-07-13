@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::{cell::RefCell, collections::HashSet};
 
-use crate::simple_parser::{BinaryOperator, Expression, Module, Point};
+use crate::simple_parser::{BinaryOperator, Expression, FunctionDef, Module, Point};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct FunctionIndex {
@@ -49,7 +49,7 @@ pub struct ScopeIndex {
     imports: HashSet<String>,
     aliases: HashSet<String>,
     requires: HashSet<String>,
-    variables: Vec<String>,
+    variables: HashSet<String>,
     modules: HashMap<String, ModuleIndex>,
 }
 
@@ -60,7 +60,7 @@ impl Default for ScopeIndex {
             imports: HashSet::new(),
             aliases: HashSet::new(),
             requires: HashSet::new(),
-            variables: vec![],
+            variables: HashSet::new(),
             modules: HashMap::new(),
         }
     }
@@ -123,7 +123,7 @@ fn build_module_body_index(expressions: &Vec<Expression>, index: &mut ModuleInde
                     doc: last_doc.clone(),
                     spec: last_spec.clone(),
                     scope: Rc::new(RefCell::new(build_function_scope_index(
-                        &function.body,
+                        &expression,
                         Some(index.scope.clone()),
                     ))),
                 });
@@ -160,37 +160,57 @@ fn build_module_body_index(expressions: &Vec<Expression>, index: &mut ModuleInde
     }
 }
 
-fn extract_identifiers(ast: &Expression) -> Vec<String> {
-    let mut buffer = Vec::new();
+fn extract_identifiers(ast: &Expression) -> HashSet<String> {
+    let mut buffer = HashSet::new();
     do_extract_identifiers(ast, &mut buffer);
     buffer
 }
 
-fn do_extract_identifiers(ast: &Expression, buffer: &mut Vec<String>) {
+fn do_extract_identifiers(ast: &Expression, buffer: &mut HashSet<String>) {
     match ast {
-        Expression::Block(block) => {
-            for expr in block {
-                do_extract_identifiers(expr, buffer);
-            }
-        }
         Expression::Tuple(expressions) => {
             for expr in expressions {
                 do_extract_identifiers(&expr, buffer);
+            }
+        }
+        Expression::FunctionDef(function) => {
+            for param in &function.parameters {
+                do_extract_identifiers(param, buffer);
+            }
+
+            match &*function.body {
+                Expression::Block(block) => {
+                    for expr in block {
+                        do_extract_identifiers(expr, buffer);
+                    }
+                }
+                _ => {}
+            }
+
+            do_extract_identifiers(&function.body, buffer);
+        }
+        Expression::List(list) => {
+            for expr in &list.body {
+                do_extract_identifiers(expr, buffer);
+            }
+
+            if let Some(ref expr) = list.cons {
+                do_extract_identifiers(expr, buffer);
             }
         }
         Expression::BinaryOperation(operation) => {
             do_extract_identifiers(&operation.left, buffer);
             do_extract_identifiers(&operation.right, buffer);
         }
-        Expression::Identifier(id) => buffer.push(id.to_string()),
-        // NOTE: we don't do it recursively for the Unparsed case because we might
-        // end up indexing a lot of identifiers that are not variables by mistake (e.g: function call name)
+        Expression::Identifier(id) => {
+            buffer.insert(id.to_string());
+        }
         _ => {}
     }
 }
 
 fn build_function_scope_index(
-    ast: &Expression,
+    function: &Expression,
     parent: Option<Rc<RefCell<ScopeIndex>>>,
 ) -> ScopeIndex {
     let mut scope = ScopeIndex {
@@ -198,15 +218,9 @@ fn build_function_scope_index(
         ..ScopeIndex::default()
     };
 
-    match ast {
-        Expression::Block(block) => {
-            for expression in block {
-                parse_scope_expression(&expression, &mut scope);
-            }
-        }
-        _ => {}
-    };
-
+    let identifiers = extract_identifiers(function);
+    scope.variables.extend(identifiers);
+    parse_scope_expression(&function, &mut scope);
     scope
 }
 
@@ -219,10 +233,9 @@ fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
                 scope.modules.insert(module.name.to_owned(), indexed_module);
             }
         }
-        Expression::BinaryOperation(operation) => {
-            if operation.operator == BinaryOperator::Match {
-                let left_ids = extract_identifiers(&operation.left);
-                scope.variables.extend(left_ids)
+        Expression::Block(block) => {
+            for expression in block {
+                parse_scope_expression(expression, scope)
             }
         }
         _ => {}
@@ -231,12 +244,13 @@ fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
     use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
     use crate::{
         indexer::{extract_identifiers, FunctionIndex, ScopeIndex},
         loc,
-        simple_parser::{Expression, FunctionDef, Parser, Point},
+        simple_parser::{Expression, Parser, Point},
     };
 
     use super::{build_module_index, ModuleIndex};
@@ -244,14 +258,6 @@ mod tests {
     fn index_module(code: &str) -> ModuleIndex {
         if let Expression::Module(m) = parse(code) {
             build_module_index(&m).unwrap()
-        } else {
-            panic!("failed to parse module")
-        }
-    }
-
-    fn parse_function(code: &str) -> FunctionDef {
-        if let Expression::FunctionDef(f) = parse(code) {
-            f
         } else {
             panic!("failed to parse module")
         }
@@ -289,7 +295,7 @@ mod tests {
                 "OtherModule.A".to_owned(),
                 "OtherModule.B".to_owned(),
             ]),
-            variables: vec!["var".to_owned()],
+            variables: HashSet::from_iter(vec!["var".to_owned()]),
             ..ScopeIndex::default()
         }));
         let target = ModuleIndex {
@@ -304,6 +310,7 @@ mod tests {
                 doc: None,
                 spec: None,
                 scope: Rc::new(RefCell::new(ScopeIndex {
+                    variables: HashSet::from_iter(vec!["a".to_owned(), "b".to_owned()]),
                     parent: Some(parent_scope),
                     ..ScopeIndex::default()
                 })),
@@ -335,7 +342,7 @@ mod tests {
         let result = index_module(code);
 
         let parent_scope = Rc::new(RefCell::new(ScopeIndex {
-            variables: vec!["parent_variable".to_owned()],
+            variables: HashSet::from_iter(vec!["parent_variable".to_owned()]),
             ..Default::default()
         }));
 
@@ -363,6 +370,7 @@ mod tests {
                     doc: None,
                     spec: None,
                     scope: Rc::new(RefCell::new(ScopeIndex {
+                        variables: HashSet::from_iter(vec!["_".to_owned()]),
                         parent: Some(parent_scope),
                         ..Default::default()
                     })),
@@ -381,9 +389,22 @@ mod tests {
             a = 1
         end
         ";
-        let func = parse_function(&code);
-        let result = extract_identifiers(&func.body);
-        let target = vec!["a".to_string()];
+        let func = parse(&code);
+        let result = extract_identifiers(&func);
+        let target = HashSet::from_iter(vec!["a".to_string()]);
+
+        assert_eq!(result, target)
+    }
+
+    #[test]
+    fn extract_variable_from_function_parameters() {
+        let code = "
+        def function(a, b, [1, 2, c] = b) do
+        end
+        ";
+        let func = parse(&code);
+        let result = extract_identifiers(&func);
+        let target = HashSet::from_iter(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
 
         assert_eq!(result, target)
     }
@@ -391,13 +412,41 @@ mod tests {
     #[test]
     fn extract_variable_from_tuple_match() {
         let code = "
-        def a do
+        def tuple_func do
             {:ok, result} = {:ok, 10}
         end
         ";
-        let func = parse_function(&code);
-        let result = extract_identifiers(&func.body);
-        let target = vec!["result".to_string()];
+        let func = parse(&code);
+        let result = extract_identifiers(&func);
+        let target = HashSet::from_iter(vec!["result".to_string()]);
+
+        assert_eq!(result, target)
+    }
+
+    #[test]
+    fn extract_variable_from_list_match() {
+        let code = "
+        def list_func do
+            [a, 2, 3] = [1, 2, 3]
+        end
+        ";
+        let func = parse(&code);
+        let result = extract_identifiers(&func);
+        let target = HashSet::from_iter(vec!["a".to_string()]);
+
+        assert_eq!(result, target)
+    }
+
+    #[test]
+    fn extract_variable_from_list_cons_match() {
+        let code = "
+        def list_func do
+            [1, 2 | rest] = [1, 2, 3]
+        end
+        ";
+        let func = parse(&code);
+        let result = extract_identifiers(&func);
+        let target = HashSet::from_iter(vec!["rest".to_string()]);
 
         assert_eq!(result, target)
     }

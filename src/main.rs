@@ -65,6 +65,10 @@ fn count_expression_modules(ast: &Expression) -> usize {
         Expression::Tuple(body) => body
             .iter()
             .fold(0, |acc, expr| acc + count_expression_modules(&expr)),
+        Expression::List(list) => list
+            .body
+            .iter()
+            .fold(0, |acc, expr| acc + count_expression_modules(&expr)),
         Expression::Identifier(_) => 0,
         Expression::Unparsed(_, children) => children
             .iter()
@@ -89,6 +93,10 @@ fn count_expression_functions(ast: &Expression) -> usize {
         Expression::Bool(_) => 0,
         Expression::FunctionDef(function) => 1 + count_expression_functions(&function.body),
         Expression::Tuple(body) => body
+            .iter()
+            .fold(0, |acc, expr| acc + count_expression_functions(&expr)),
+        Expression::List(list) => list
+            .body
             .iter()
             .fold(0, |acc, expr| acc + count_expression_functions(&expr)),
         Expression::Block(block) => block
