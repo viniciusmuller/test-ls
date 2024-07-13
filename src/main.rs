@@ -30,9 +30,9 @@ fn main() {
         }
 
         let all_modules_index = results.iter().map(|(_, m, _)| m).flatten();
-        let total_functions = all_modules_index
-            .clone()
-            .fold(0, |acc, index| acc + index.module.functions.len());
+        let total_functions = all_modules_index.clone().fold(0, |acc, index| {
+            acc + index.module.functions.len()
+        });
 
         println!("finished indexing: {} files", results.len());
         println!("Indexed {} modules", all_modules_index.count());

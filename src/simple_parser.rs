@@ -567,9 +567,30 @@ fn try_parse_function_definition(parser: &Parser, node: &Node) -> Option<Express
     let caller = try_parse_either_identifier(parser, &def_node, &["def", "defp"])?;
     let is_private = caller == "defp";
     let def_arguments_node = expect_sibling(&def_node, "arguments")?;
-    let (function_name, parameters) = try_parse_function_def(parser, &def_arguments_node)?;
-    let body_node = expect_sibling(&def_arguments_node, "do_block")?;
-    let body = try_parse_do_block(parser, &body_node)?;
+
+    let arguments_node_child = def_arguments_node.child(0)?;
+    let (function_name, parameters) = match arguments_node_child.grammar_name() {
+        "identifier" => {
+            let function_name = parser.get_text(&arguments_node_child);
+            (function_name, vec![])
+        }
+        _ => {
+            let func_name_node = expect_child(&arguments_node_child, "identifier")?;
+            let function_name = parser.get_text(&func_name_node);
+            let parameters_arguments = expect_sibling(&func_name_node, "arguments")?;
+            let parameters = parse_parameters(parser, &parameters_arguments);
+            (function_name, parameters)
+        }
+    };
+
+    let body = match def_arguments_node.next_sibling() {
+        Some(body_node) => try_parse_do_block(parser, &body_node)?,
+        None => {
+            let comma_node = expect_sibling(&arguments_node_child, ",")?;
+            try_parse_do_keyword(parser, &comma_node)?
+        }
+    };
+
     let function = FunctionDef {
         location: tree_sitter_location_to_point(def_arguments_node.start_position()),
         is_private,
@@ -580,24 +601,17 @@ fn try_parse_function_definition(parser: &Parser, node: &Node) -> Option<Express
     Some(Expression::FunctionDef(function))
 }
 
-fn try_parse_function_def(parser: &Parser, node: &Node) -> Option<(String, Vec<Expression>)> {
-    let child = node.child(0)?;
-
-    match child.grammar_name() {
-        "identifier" => {
-            let function_name = parser.get_text(&child);
-            Some((function_name, vec![]))
-        }
-        _ => {
-            let call_node = expect_child(node, "call")?;
-            let func_name_node = call_node.child(0)?;
-            let function_name = parser.get_text(&func_name_node);
-            let parameters_arguments = func_name_node.next_sibling()?;
-            let _ = try_parse_grammar_name(&parameters_arguments, "arguments")?;
-            let parameters = parse_parameters(parser, &parameters_arguments);
-            Some((function_name, parameters))
-        }
-    }
+fn try_parse_do_keyword(parser: &Parser, body_node: &Node) -> Option<Expression> {
+    try_parse_grammar_name(body_node, ",")?;
+    let keywords_node = expect_sibling(body_node, "keywords")?;
+    let pair_node = expect_child(&keywords_node, "pair")?;
+    let keyword_node = expect_child(&pair_node, "keyword")?;
+    let body_node = keyword_node.next_sibling()?;
+    // TODO: maybe we should go back to inlining blocks for single-expressions blocks now that the
+    // indexer structure changed
+    Some(Expression::Block(vec![parse_expression(
+        parser, &body_node,
+    )]))
 }
 
 fn expect_child<'a>(node: &'a Node, target: &str) -> Option<Node<'a>> {
@@ -630,6 +644,7 @@ fn parse_parameters(parser: &Parser, node: &Node) -> Vec<Expression> {
 }
 
 fn try_parse_do_block(parser: &Parser, node: &Node) -> Option<Expression> {
+    try_parse_grammar_name(node, "do_block")?;
     let child = expect_child(node, "do")?;
     let body = parse_sibilings_until_end(parser, &child)?;
     Some(Expression::Block(body))
@@ -1062,6 +1077,43 @@ mod tests {
         let result = parse(code);
         assert_eq!(result, expected)
     }
+
+    #[test]
+    fn parse_function_keyword_form() {
+        let code = "
+        defp my_func(a, b), do: a + b
+        ";
+        let result = parse(code);
+        let expected = defp!(
+            "my_func",
+            vec![id!("a"), id!("b")],
+            block!(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
+            loc!(1, 13)
+        );
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn parse_function_keyword_form_no_args() {
+        let code = "
+        defp my_func(), do: a + b
+        ";
+        let result = parse(code);
+        let expected = defp!(
+            "my_func",
+            vec![],
+            block!(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
+            loc!(1, 13)
+        );
+        assert_eq!(result, expected);
+
+        let code = "
+        defp my_func(), do: a + b
+        ";
+        let result = parse(code);
+        assert_eq!(result, expected)
+    }
+
     #[test]
     fn parse_attribute() {
         let code = r#"

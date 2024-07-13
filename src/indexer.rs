@@ -54,12 +54,12 @@ impl Default for ModuleIndex {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ScopeIndex {
-    parent_index: Option<usize>,
-    imports: HashSet<String>,
-    aliases: HashSet<String>,
-    requires: HashSet<String>,
-    variables: HashSet<String>,
-    modules: HashMap<String, ModuleIndex>,
+    pub parent_index: Option<usize>,
+    pub imports: HashSet<String>,
+    pub aliases: HashSet<String>,
+    pub requires: HashSet<String>,
+    pub variables: HashSet<String>,
+    pub modules: HashMap<String, ModuleIndex>,
 }
 
 impl Default for ScopeIndex {
@@ -78,7 +78,7 @@ impl Default for ScopeIndex {
 pub fn build_index(module: &Module) -> Option<Index> {
     let mut scopes = vec![];
 
-    let module_index = build_module_index(&module, &mut scopes);
+    let module_index = build_module_index(&module, None, &mut scopes);
     let index = Index {
         scopes: scopes
             .into_iter()
@@ -89,14 +89,24 @@ pub fn build_index(module: &Module) -> Option<Index> {
     Some(index)
 }
 
-fn build_module_index(module: &Module, scopes: &mut Vec<Rc<RefCell<ScopeIndex>>>) -> ModuleIndex {
+fn build_module_index(
+    module: &Module,
+    parent_index: Option<usize>,
+    scopes: &mut Vec<Rc<RefCell<ScopeIndex>>>,
+) -> ModuleIndex {
     let mut last_doc: Option<String> = None;
     let mut last_spec: Option<Expression> = None;
-    let scope = Rc::new(RefCell::new(ScopeIndex::default()));
+    let scope = Rc::new(RefCell::new(ScopeIndex {
+        parent_index,
+        ..Default::default()
+    }));
+
+    let scope_index = if scopes.len() > 0 { scopes.len() } else { 0 };
 
     let mut module_index = ModuleIndex {
         location: module.location.clone(),
         name: module.name.to_owned(),
+        scope_index,
         ..ModuleIndex::default()
     };
 
@@ -106,15 +116,16 @@ fn build_module_index(module: &Module, scopes: &mut Vec<Rc<RefCell<ScopeIndex>>>
         Expression::Block(block) => {
             for expression in block {
                 match expression {
-                    // Expression::Module(module) => {
-                    //     let boxed = Box::new(module);
+                    Expression::Module(module) => {
+                        let nested_module_parent = Some(scope_index);
+                        let indexed_module =
+                            build_module_index(module, nested_module_parent, scopes);
 
-                    //     if let Some(indexed_module) = build_index(boxed.as_ref()) {
-                    //         module_scope
-                    //             .modules
-                    //             .insert(module.name.to_owned(), indexed_module);
-                    //     }
-                    // }
+                        scope
+                            .borrow_mut()
+                            .modules
+                            .insert(module.name.to_owned(), indexed_module);
+                    }
                     Expression::BinaryOperation(operation) => {
                         if operation.operator == BinaryOperator::Match {
                             let left_ids = extract_identifiers(&operation.left);
@@ -131,7 +142,8 @@ fn build_module_index(module: &Module, scopes: &mut Vec<Rc<RefCell<ScopeIndex>>>
                         scope.borrow_mut().imports.extend(imports.clone());
                     }
                     Expression::FunctionDef(function) => {
-                        let function_scope = build_function_scope_index(&expression, Some(0));
+                        let function_scope =
+                            build_function_scope_index(&expression, Some(scope_index));
                         scopes.push(Rc::new(RefCell::new(function_scope)));
 
                         module_index.functions.push(FunctionIndex {
@@ -169,9 +181,6 @@ fn build_module_index(module: &Module, scopes: &mut Vec<Rc<RefCell<ScopeIndex>>>
                             .attributes
                             .push((name.to_owned(), *body.clone())),
                     },
-
-                    // TODO: apparently the scope inside (a;b) blocks leak to the outer scope in the compiler
-                    // Expression::Scope(_) => todo!(),
                     _ => {}
                 }
             }
@@ -264,7 +273,7 @@ fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use crate::{
         indexer::{extract_identifiers, FunctionIndex, ScopeIndex},
@@ -407,6 +416,50 @@ mod tests {
                         scope_index: 2,
                     },
                 ],
+                ..Default::default()
+            },
+        };
+
+        assert_eq!(result, target)
+    }
+
+    #[test]
+    fn nested_modules() {
+        let code = r#"
+        defmodule MyModule do
+            defmodule Inner do
+
+            end
+        end
+        "#;
+        let result = index_module(code);
+
+        let parent_scope = ScopeIndex {
+            parent_index: None,
+            modules: HashMap::from_iter(vec![(
+                "Inner".to_owned(),
+                ModuleIndex {
+                    location: loc!(2, 22),
+                    name: "Inner".to_owned(),
+                    scope_index: 1,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        let inner_scope = ScopeIndex {
+            parent_index: Some(0),
+            ..Default::default()
+        };
+
+        let target = Index {
+            scopes: vec![parent_scope, inner_scope],
+            module: ModuleIndex {
+                location: loc!(1, 18),
+                name: "MyModule".to_owned(),
+                docs: None,
+                scope_index: 0,
                 ..Default::default()
             },
         };
