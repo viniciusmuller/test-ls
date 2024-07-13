@@ -1,39 +1,48 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::rc::Rc;
-use std::{cell::RefCell, collections::HashSet};
 
-use crate::simple_parser::{BinaryOperator, Expression, FunctionDef, Module, Point};
+// TODO: index nested modules
+
+use crate::simple_parser::{BinaryOperator, Expression, Module, Point};
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct FunctionIndex {
-    location: Point,
-    is_private: bool,
-    name: String,
-    doc: Option<String>,
-    spec: Option<Expression>,
-    scope: Rc<RefCell<ScopeIndex>>,
-    // TODO: probably will need to store function body to be able to compute lambda scopes
+pub struct Index {
+    pub scopes: Vec<ScopeIndex>,
+    pub module: ModuleIndex,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ModuleIndex {
-    location: Point,
-    name: String,
-    docs: Option<String>,
-    scope: Rc<RefCell<ScopeIndex>>,
-    attributes: Vec<(String, Expression)>,
-    types: Vec<(String, Expression)>,
+    pub location: Point,
+    pub name: String,
+    pub docs: Option<String>,
+    pub scope_index: usize,
+    pub attributes: Vec<(String, Expression)>,
+    pub types: Vec<(String, Expression)>,
     // TODO: group function clauses into a single function structure by name and arity
-    functions: Vec<FunctionIndex>,
-    macros: Vec<String>,
+    pub functions: Vec<FunctionIndex>,
+    pub macros: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct FunctionIndex {
+    pub location: Point,
+    pub is_private: bool,
+    pub name: String,
+    pub doc: Option<String>,
+    pub spec: Option<Expression>,
+    pub scope_index: usize,
+    // TODO: probably will need to store function body to be able to compute lambda scopes
 }
 
 impl Default for ModuleIndex {
     fn default() -> Self {
         Self {
+            scope_index: 0,
             location: Point { line: 1, column: 0 },
             docs: None,
-            scope: Rc::new(RefCell::new(ScopeIndex::default())),
             attributes: vec![],
             functions: vec![],
             types: vec![],
@@ -45,7 +54,7 @@ impl Default for ModuleIndex {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ScopeIndex {
-    parent: Option<Rc<RefCell<ScopeIndex>>>,
+    parent_index: Option<usize>,
     imports: HashSet<String>,
     aliases: HashSet<String>,
     requires: HashSet<String>,
@@ -56,7 +65,7 @@ pub struct ScopeIndex {
 impl Default for ScopeIndex {
     fn default() -> Self {
         Self {
-            parent: None,
+            parent_index: None,
             imports: HashSet::new(),
             aliases: HashSet::new(),
             requires: HashSet::new(),
@@ -66,98 +75,111 @@ impl Default for ScopeIndex {
     }
 }
 
-pub fn build_module_index(module: &Module) -> Option<ModuleIndex> {
-    let mut index = ModuleIndex {
+pub fn build_index(module: &Module) -> Option<Index> {
+    let mut scopes = vec![];
+
+    let module_index = build_module_index(&module, &mut scopes);
+    let index = Index {
+        scopes: scopes
+            .into_iter()
+            .map(|s| Rc::try_unwrap(s).unwrap().into_inner())
+            .collect::<Vec<_>>(),
+        module: module_index,
+    };
+    Some(index)
+}
+
+fn build_module_index(module: &Module, scopes: &mut Vec<Rc<RefCell<ScopeIndex>>>) -> ModuleIndex {
+    let mut last_doc: Option<String> = None;
+    let mut last_spec: Option<Expression> = None;
+    let scope = Rc::new(RefCell::new(ScopeIndex::default()));
+
+    let mut module_index = ModuleIndex {
         location: module.location.clone(),
         name: module.name.to_owned(),
         ..ModuleIndex::default()
     };
 
+    scopes.push(scope.clone());
+
     match module.body.as_ref() {
         Expression::Block(block) => {
-            build_module_body_index(&block, &mut index);
-            Some(index)
+            for expression in block {
+                match expression {
+                    // Expression::Module(module) => {
+                    //     let boxed = Box::new(module);
+
+                    //     if let Some(indexed_module) = build_index(boxed.as_ref()) {
+                    //         module_scope
+                    //             .modules
+                    //             .insert(module.name.to_owned(), indexed_module);
+                    //     }
+                    // }
+                    Expression::BinaryOperation(operation) => {
+                        if operation.operator == BinaryOperator::Match {
+                            let left_ids = extract_identifiers(&operation.left);
+                            scope.borrow_mut().variables.extend(left_ids)
+                        }
+                    }
+                    Expression::Alias(aliases) => {
+                        scope.borrow_mut().aliases.extend(aliases.clone());
+                    }
+                    Expression::Require(requires) => {
+                        scope.borrow_mut().requires.extend(requires.clone());
+                    }
+                    Expression::Import(imports) => {
+                        scope.borrow_mut().imports.extend(imports.clone());
+                    }
+                    Expression::FunctionDef(function) => {
+                        let function_scope = build_function_scope_index(&expression, Some(0));
+                        scopes.push(Rc::new(RefCell::new(function_scope)));
+
+                        module_index.functions.push(FunctionIndex {
+                            location: function.location.clone(),
+                            is_private: function.is_private,
+                            name: function.name.to_owned(),
+                            doc: last_doc.clone(),
+                            spec: last_spec.clone(),
+                            scope_index: scopes.len() - 1,
+                        });
+
+                        if last_doc.is_some() {
+                            last_doc = None
+                        };
+
+                        if last_spec.is_some() {
+                            last_spec = None;
+                        };
+                    }
+                    Expression::Attribute(name, body) => match name.as_str() {
+                        "doc" => {
+                            if let Expression::String(s) = body.as_ref() {
+                                last_doc = Some(s.to_owned());
+                            };
+                        }
+                        "spec" => {
+                            last_spec = Some(*body.to_owned());
+                        }
+                        "moduledoc" => {
+                            if let Expression::String(s) = body.as_ref() {
+                                module_index.docs = Some(s.to_owned());
+                            };
+                        }
+                        _ => module_index
+                            .attributes
+                            .push((name.to_owned(), *body.clone())),
+                    },
+
+                    // TODO: apparently the scope inside (a;b) blocks leak to the outer scope in the compiler
+                    // Expression::Scope(_) => todo!(),
+                    _ => {}
+                }
+            }
         }
-        _ => None,
+        _ => {}
     }
-}
 
-fn build_module_body_index(expressions: &Vec<Expression>, index: &mut ModuleIndex) {
-    let mut last_doc: Option<String> = None;
-    let mut last_spec: Option<Expression> = None;
-
-    for expression in expressions {
-        match expression {
-            Expression::Module(module) => {
-                let boxed = Box::new(module);
-
-                if let Some(indexed_module) = build_module_index(boxed.as_ref()) {
-                    let mut scope = index.scope.borrow_mut();
-                    scope.modules.insert(module.name.to_owned(), indexed_module);
-                }
-            }
-            Expression::BinaryOperation(operation) => {
-                if operation.operator == BinaryOperator::Match {
-                    let left_ids = extract_identifiers(&operation.left);
-                    let mut scope = index.scope.borrow_mut();
-                    scope.variables.extend(left_ids)
-                }
-            }
-            Expression::Alias(aliases) => {
-                let mut scope = index.scope.borrow_mut();
-                scope.aliases.extend(aliases.clone());
-            }
-            Expression::Require(requires) => {
-                let mut scope = index.scope.borrow_mut();
-                scope.requires.extend(requires.clone());
-            }
-            Expression::Import(imports) => {
-                let mut scope = index.scope.borrow_mut();
-                scope.imports.extend(imports.clone());
-            }
-            Expression::FunctionDef(function) => {
-                index.functions.push(FunctionIndex {
-                    location: function.location.clone(),
-                    is_private: function.is_private,
-                    name: function.name.to_owned(),
-                    doc: last_doc.clone(),
-                    spec: last_spec.clone(),
-                    scope: Rc::new(RefCell::new(build_function_scope_index(
-                        &expression,
-                        Some(index.scope.clone()),
-                    ))),
-                });
-
-                if last_doc.is_some() {
-                    last_doc = None
-                };
-
-                if last_spec.is_some() {
-                    last_spec = None;
-                };
-            }
-            Expression::Attribute(name, body) => match name.as_str() {
-                "doc" => {
-                    if let Expression::String(s) = body.as_ref() {
-                        last_doc = Some(s.to_owned());
-                    };
-                }
-                "spec" => {
-                    last_spec = Some(*body.to_owned());
-                }
-                "moduledoc" => {
-                    if let Expression::String(s) = body.as_ref() {
-                        index.docs = Some(s.to_owned());
-                    };
-                }
-                _ => index.attributes.push((name.to_owned(), *body.clone())),
-            },
-
-            // TODO: apparently the scope inside (a;b) blocks leak to the outer scope in the compiler
-            // Expression::Scope(_) => todo!(),
-            _ => {}
-        }
-    }
+    module_index
 }
 
 fn extract_identifiers(ast: &Expression) -> HashSet<String> {
@@ -209,12 +231,9 @@ fn do_extract_identifiers(ast: &Expression, buffer: &mut HashSet<String>) {
     }
 }
 
-fn build_function_scope_index(
-    function: &Expression,
-    parent: Option<Rc<RefCell<ScopeIndex>>>,
-) -> ScopeIndex {
+fn build_function_scope_index(function: &Expression, parent_index: Option<usize>) -> ScopeIndex {
     let mut scope = ScopeIndex {
-        parent,
+        parent_index,
         ..ScopeIndex::default()
     };
 
@@ -226,13 +245,13 @@ fn build_function_scope_index(
 
 fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
     match expression {
-        Expression::Module(module) => {
-            let boxed = Box::new(module);
+        // Expression::Module(module) => {
+        //     let boxed = Box::new(module);
 
-            if let Some(indexed_module) = build_module_index(boxed.as_ref()) {
-                scope.modules.insert(module.name.to_owned(), indexed_module);
-            }
-        }
+        //     if let Some(indexed_module) = build_index(boxed.as_ref()) {
+        //         scope.modules.insert(module.name.to_owned(), indexed_module);
+        //     }
+        // }
         Expression::Block(block) => {
             for expression in block {
                 parse_scope_expression(expression, scope)
@@ -245,7 +264,7 @@ fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
-    use std::{cell::RefCell, collections::HashSet, rc::Rc};
+    use std::collections::HashSet;
 
     use crate::{
         indexer::{extract_identifiers, FunctionIndex, ScopeIndex},
@@ -253,11 +272,11 @@ mod tests {
         simple_parser::{Expression, Parser, Point},
     };
 
-    use super::{build_module_index, ModuleIndex};
+    use super::{build_index, Index, ModuleIndex};
 
-    fn index_module(code: &str) -> ModuleIndex {
+    fn index_module(code: &str) -> Index {
         if let Expression::Module(m) = parse(code) {
-            build_module_index(&m).unwrap()
+            build_index(&m).unwrap()
         } else {
             panic!("failed to parse module")
         }
@@ -287,7 +306,8 @@ mod tests {
         end
         "#;
         let result = index_module(code);
-        let parent_scope = Rc::new(RefCell::new(ScopeIndex {
+        let parent_scope = ScopeIndex {
+            parent_index: None,
             imports: HashSet::from_iter(vec!["Ecto.Query".to_owned()]),
             requires: HashSet::from_iter(vec!["Logger".to_owned()]),
             aliases: HashSet::from_iter(vec![
@@ -297,25 +317,29 @@ mod tests {
             ]),
             variables: HashSet::from_iter(vec!["var".to_owned()]),
             ..ScopeIndex::default()
-        }));
-        let target = ModuleIndex {
-            location: loc!(1, 18),
-            name: "MyModule".to_owned(),
-            docs: Some("this is a nice module!".to_owned()),
-            scope: parent_scope.clone(),
-            functions: vec![FunctionIndex {
-                location: loc!(11, 16),
-                is_private: false,
-                name: "func".to_owned(),
-                doc: None,
-                spec: None,
-                scope: Rc::new(RefCell::new(ScopeIndex {
-                    variables: HashSet::from_iter(vec!["a".to_owned(), "b".to_owned()]),
-                    parent: Some(parent_scope),
-                    ..ScopeIndex::default()
-                })),
-            }],
-            ..ModuleIndex::default()
+        };
+        let func_scope = ScopeIndex {
+            variables: HashSet::from_iter(vec!["a".to_owned(), "b".to_owned()]),
+            parent_index: Some(0),
+            ..ScopeIndex::default()
+        };
+        let target = Index {
+            scopes: vec![parent_scope, func_scope],
+            module: ModuleIndex {
+                location: loc!(1, 18),
+                name: "MyModule".to_owned(),
+                docs: Some("this is a nice module!".to_owned()),
+                scope_index: 0,
+                functions: vec![FunctionIndex {
+                    location: loc!(11, 16),
+                    is_private: false,
+                    name: "func".to_owned(),
+                    doc: None,
+                    spec: None,
+                    scope_index: 1,
+                }],
+                ..ModuleIndex::default()
+            },
         };
 
         assert_eq!(result, target)
@@ -341,42 +365,50 @@ mod tests {
         "#;
         let result = index_module(code);
 
-        let parent_scope = Rc::new(RefCell::new(ScopeIndex {
+        let parent_scope = ScopeIndex {
+            parent_index: None,
             variables: HashSet::from_iter(vec!["parent_variable".to_owned()]),
             ..Default::default()
-        }));
+        };
 
-        let target = ModuleIndex {
-            location: loc!(1, 18),
-            name: "MyModule".to_owned(),
-            docs: None,
-            scope: parent_scope.clone(),
-            functions: vec![
-                FunctionIndex {
-                    location: loc!(8, 16),
-                    is_private: false,
-                    name: "a".to_string(),
-                    doc: Some("sums two numbers".to_string()),
-                    spec: None,
-                    scope: Rc::new(RefCell::new(ScopeIndex {
-                        parent: Some(parent_scope.clone()),
-                        ..Default::default()
-                    })),
-                },
-                FunctionIndex {
-                    location: loc!(11, 17),
-                    is_private: true,
-                    name: "no_docs".to_string(),
-                    doc: None,
-                    spec: None,
-                    scope: Rc::new(RefCell::new(ScopeIndex {
-                        variables: HashSet::from_iter(vec!["_".to_owned()]),
-                        parent: Some(parent_scope),
-                        ..Default::default()
-                    })),
-                },
-            ],
+        let a_scope = ScopeIndex {
+            parent_index: Some(0),
             ..Default::default()
+        };
+
+        let no_docs_scope = ScopeIndex {
+            variables: HashSet::from_iter(vec!["_".to_owned()]),
+            parent_index: Some(0),
+            ..Default::default()
+        };
+
+        let target = Index {
+            scopes: vec![parent_scope, a_scope, no_docs_scope],
+            module: ModuleIndex {
+                location: loc!(1, 18),
+                name: "MyModule".to_owned(),
+                docs: None,
+                scope_index: 0,
+                functions: vec![
+                    FunctionIndex {
+                        location: loc!(8, 16),
+                        is_private: false,
+                        name: "a".to_string(),
+                        doc: Some("sums two numbers".to_string()),
+                        spec: None,
+                        scope_index: 1,
+                    },
+                    FunctionIndex {
+                        location: loc!(11, 17),
+                        is_private: true,
+                        name: "no_docs".to_string(),
+                        doc: None,
+                        spec: None,
+                        scope_index: 2,
+                    },
+                ],
+                ..Default::default()
+            },
         };
 
         assert_eq!(result, target)

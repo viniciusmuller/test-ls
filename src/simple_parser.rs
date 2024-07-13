@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use tree_sitter::{Node, Tree};
 
-use crate::indexer::build_module_index;
+use crate::indexer::{build_index, Index, ModuleIndex};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TSError {
@@ -203,14 +203,34 @@ impl Parser {
             expr => expr,
         };
 
-        // print_expression(&ast, 0);
+        ast
+    }
 
-        // TODO: handle multiple modules in top level scope
-        if let Expression::Module(ref module) = ast {
-            build_module_index(&module);
+    pub fn index(&self, ast: &Expression) -> Vec<Index> {
+        let mut modules = vec![];
+
+        match ast {
+            Expression::Block(ref expressions) => {
+                for expression in expressions {
+                    match expression {
+                        Expression::Module(ref module) => {
+                            if let Some(module) = build_index(&module) {
+                                modules.push(module)
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Expression::Module(ref module) => {
+                if let Some(module) = build_index(&module) {
+                    modules.push(module)
+                }
+            }
+            _ => {}
         }
 
-        ast
+        modules
     }
 
     pub fn get_text(&self, node: &Node) -> String {
@@ -728,8 +748,8 @@ fn print_expression(ast: &Expression, depth: usize) {
 
 #[cfg(test)]
 mod tests {
-    use pretty_assertions::assert_eq;
     use crate::simple_parser::BinaryOperator;
+    use pretty_assertions::assert_eq;
 
     use super::BinaryOperation;
     use super::Expression;
