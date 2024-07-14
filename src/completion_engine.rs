@@ -1,17 +1,13 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
 use log::{info, trace};
-use string_interner::{DefaultBackend, DefaultSymbol, StringInterner};
+use string_interner::DefaultSymbol;
 use trie_rs::{Trie, TrieBuilder};
 
-use crate::{
-    indexer::Index,
-    interner::{get_string, resolve_string},
-};
+use crate::{indexer::Index, interner::resolve_string};
 
 pub enum GlobalIndexMessage {
     NewModule(Index),
@@ -69,11 +65,13 @@ impl CompletionEngine {
             CompletionContext::Module => match self.modules_trie {
                 None => vec![],
                 Some(ref trie) => {
-                    let result: Vec<String> = trie.predictive_search(&query.query).collect();
-                    result
+                    let result: Vec<CompletionItem> = trie
+                        .predictive_search(&query.query)
                         .into_iter()
+                        .take(10)
                         .map(|a| CompletionItem::Module(a))
-                        .collect()
+                        .collect();
+                    result
                 }
             },
             CompletionContext::ModuleContents(module_name) => {

@@ -6,11 +6,9 @@ mod parser;
 mod simple_parser;
 
 use std::sync::mpsc::channel;
-use std::sync::{Arc, RwLock};
 use std::{env, error::Error, ffi::OsStr, fs, sync::mpsc::Sender, thread, time::Instant};
 
 use completion_engine::{CompletionContext, CompletionQuery, GlobalIndexMessage};
-use string_interner::{DefaultBackend, StringInterner};
 use walkdir::WalkDir;
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -124,6 +122,20 @@ fn index_dir_recursive(completion_engine_tx: Sender<GlobalIndexMessage>, path: &
         .send(GlobalIndexMessage::Query(CompletionQuery {
             query: "i".to_owned(),
             context: CompletionContext::ModuleContents(interner::get_string("IO").unwrap()),
+        }))
+        .unwrap();
+
+    completion_engine_tx
+        .send(GlobalIndexMessage::Query(CompletionQuery {
+            query: "A".to_owned(),
+            context: CompletionContext::Module,
+        }))
+        .unwrap();
+
+    completion_engine_tx
+        .send(GlobalIndexMessage::Query(CompletionQuery {
+            query: "ExDoc".to_owned(),
+            context: CompletionContext::Module,
         }))
         .unwrap();
 }

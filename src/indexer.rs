@@ -2,12 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::RwLock;
 
 // TODO: index nested modules
 
-use string_interner::DefaultBackend;
 use string_interner::DefaultSymbol;
 use string_interner::StringInterner;
 

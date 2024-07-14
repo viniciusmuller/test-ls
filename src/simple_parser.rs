@@ -1,9 +1,4 @@
-use std::{
-    fmt::Display,
-    sync::{Arc, RwLock},
-};
-
-use string_interner::{DefaultBackend, DefaultSymbol, StringInterner};
+use string_interner::{DefaultSymbol, StringInterner};
 use tree_sitter::{Node, Tree};
 
 use crate::{
