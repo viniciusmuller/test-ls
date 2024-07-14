@@ -1,11 +1,12 @@
 use std::error::Error;
 
+use log::info;
 use lsp_server::{Connection, Message};
 use lsp_types::{InitializeParams, OneOf, ServerCapabilities};
 
 pub fn start_server() -> Result<(), Box<dyn Error + Sync + Send>> {
     // Note that  we must have our logging only write out to stderr.
-    eprintln!("starting generic LSP server");
+    info!("Starting generic LSP server");
 
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
     // also be implemented to use sockets or HTTP.
@@ -31,7 +32,7 @@ pub fn start_server() -> Result<(), Box<dyn Error + Sync + Send>> {
     io_threads.join()?;
 
     // Shut down gracefully.
-    eprintln!("shutting down server");
+    info!("Shutting down server");
     Ok(())
 }
 

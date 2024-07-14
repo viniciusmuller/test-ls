@@ -91,13 +91,13 @@ pub fn build_index(module: &Module) -> Option<Index> {
 
 fn build_module_index(
     module: &Module,
-    parent_index: Option<usize>,
+    parent_module: Option<&ModuleIndex>,
     scopes: &mut Vec<Rc<RefCell<ScopeIndex>>>,
 ) -> ModuleIndex {
     let mut last_doc: Option<String> = None;
     let mut last_spec: Option<Expression> = None;
     let scope = Rc::new(RefCell::new(ScopeIndex {
-        parent_index,
+        parent_index: parent_module.map(|m| m.scope_index),
         ..Default::default()
     }));
 
@@ -105,7 +105,9 @@ fn build_module_index(
 
     let mut module_index = ModuleIndex {
         location: module.location.clone(),
-        name: module.name.to_owned(),
+        name: parent_module
+            .map(|m| format!("{}.{}", m.name, module.name))
+            .unwrap_or(module.name.to_owned()),
         scope_index,
         ..ModuleIndex::default()
     };
@@ -116,15 +118,15 @@ fn build_module_index(
         Expression::Block(block) => {
             for expression in block {
                 match expression {
-                    Expression::Module(module) => {
-                        let nested_module_parent = Some(scope_index);
+                    Expression::Module(child_module) => {
+                        let child_module_name = format!("{}.{}", module.name, child_module.name);
                         let indexed_module =
-                            build_module_index(module, nested_module_parent, scopes);
+                            build_module_index(child_module, Some(&module_index), scopes);
 
                         scope
                             .borrow_mut()
                             .modules
-                            .insert(module.name.to_owned(), indexed_module);
+                            .insert(child_module_name, indexed_module);
                     }
                     Expression::BinaryOperation(operation) => {
                         if operation.operator == BinaryOperator::Match {
@@ -437,10 +439,10 @@ mod tests {
         let parent_scope = ScopeIndex {
             parent_index: None,
             modules: HashMap::from_iter(vec![(
-                "Inner".to_owned(),
+                "MyModule.Inner".to_owned(),
                 ModuleIndex {
                     location: loc!(2, 22),
-                    name: "Inner".to_owned(),
+                    name: "MyModule.Inner".to_owned(),
                     scope_index: 1,
                     ..Default::default()
                 },
