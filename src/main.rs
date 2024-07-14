@@ -1,6 +1,7 @@
 mod completion_engine;
 mod completion_engine_actor;
 mod indexer;
+mod interner;
 mod parser;
 mod simple_parser;
 
@@ -15,15 +16,12 @@ use walkdir::WalkDir;
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     env_logger::init();
 
-    let interner = Arc::new(RwLock::new(StringInterner::default()));
     let (tx, rx) = channel::<GlobalIndexMessage>();
 
-    let index_interner = interner.clone();
-    let index_handle = thread::spawn(|| indexer(index_interner, tx));
+    let index_handle = thread::spawn(|| indexer(tx));
 
-    let completion_engine_interner = interner.clone();
     let completion_engine_actor = thread::spawn(move || {
-        completion_engine_actor::start(completion_engine_interner, rx);
+        completion_engine_actor::start(rx);
     });
 
     index_handle.join().unwrap();
@@ -33,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     Ok(())
 }
 
-fn indexer(interner: Arc<RwLock<StringInterner<DefaultBackend>>>, tx: Sender<GlobalIndexMessage>) {
+fn indexer(tx: Sender<GlobalIndexMessage>) {
     let args: Vec<String> = env::args().into_iter().collect::<Vec<_>>();
     let cwd = env::current_dir()
         .unwrap()
@@ -44,7 +42,7 @@ fn indexer(interner: Arc<RwLock<StringInterner<DefaultBackend>>>, tx: Sender<Glo
     let paths = &[args.get(1).unwrap_or_else(|| &cwd)]; // fs::read_dir(&args[1]).unwrap();
 
     for path in paths {
-        index_dir_recursive(interner.clone(), tx.clone(), path.as_str());
+        index_dir_recursive(tx.clone(), path.as_str());
 
         // results.sort_by(|(_, _, e1), (_, _, e2)| e2.cmp(e1));
 
@@ -65,11 +63,7 @@ fn indexer(interner: Arc<RwLock<StringInterner<DefaultBackend>>>, tx: Sender<Glo
     }
 }
 
-fn index_dir_recursive(
-    interner: Arc<RwLock<StringInterner<DefaultBackend>>>,
-    completion_engine_tx: Sender<GlobalIndexMessage>,
-    path: &str,
-) {
+fn index_dir_recursive(completion_engine_tx: Sender<GlobalIndexMessage>, path: &str) {
     let mut file_paths = Vec::new();
 
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
@@ -89,11 +83,7 @@ fn index_dir_recursive(
     let now = Instant::now();
     file_paths.par_iter().for_each(|path| {
         let contents = fs::read_to_string(path).expect("Should have been able to read the file");
-        let parser = simple_parser::Parser::new(
-            interner.clone(),
-            contents,
-            path.to_str().unwrap().to_owned(),
-        );
+        let parser = simple_parser::Parser::new(contents, path.to_str().unwrap().to_owned());
         let result = parser.parse();
         let indexes = parser.index(&result);
 
@@ -126,18 +116,14 @@ fn index_dir_recursive(
     completion_engine_tx
         .send(GlobalIndexMessage::Query(CompletionQuery {
             query: "ma".to_owned(),
-            context: CompletionContext::ModuleContents(
-                interner.write().unwrap().get("Enum").unwrap(),
-            ),
+            context: CompletionContext::ModuleContents(interner::get_string("Enum").unwrap()),
         }))
         .unwrap();
 
     completion_engine_tx
         .send(GlobalIndexMessage::Query(CompletionQuery {
             query: "i".to_owned(),
-            context: CompletionContext::ModuleContents(
-                interner.write().unwrap().get("IO").unwrap(),
-            ),
+            context: CompletionContext::ModuleContents(interner::get_string("IO").unwrap()),
         }))
         .unwrap();
 }

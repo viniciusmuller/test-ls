@@ -11,6 +11,8 @@ use string_interner::DefaultBackend;
 use string_interner::DefaultSymbol;
 use string_interner::StringInterner;
 
+use crate::interner::intern_string;
+use crate::interner::resolve_string;
 use crate::simple_parser::{BinaryOperator, Expression, Location, Module};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -84,13 +86,11 @@ impl Default for ScopeIndex {
 }
 
 #[derive(Debug)]
-pub struct Indexer {
-    interner: Arc<RwLock<StringInterner<DefaultBackend>>>,
-}
+pub struct Indexer {}
 
 impl Indexer {
-    pub fn new(interner: Arc<RwLock<StringInterner<DefaultBackend>>>) -> Self {
-        Indexer { interner }
+    pub fn new() -> Self {
+        Self {}
     }
 
     pub fn index(&self, module: &Module) -> Option<Index> {
@@ -123,13 +123,10 @@ impl Indexer {
         let scope_index = if scopes.len() > 0 { scopes.len() } else { 0 };
 
         let module_name = {
-            let mut interner = self.interner.write().unwrap();
-
             parent_module
                 .map(|parent| {
-                    let child_name =
-                        build_nested_module_name(interner.to_owned(), parent.name, module.name);
-                    interner.get_or_intern(child_name)
+                    let child_name = build_nested_module_name(parent.name, module.name);
+                    intern_string(&child_name)
                 })
                 .unwrap_or(module.name)
         };
@@ -152,23 +149,19 @@ impl Indexer {
                 for expression in block {
                     match expression {
                         Expression::Module(child_module) => {
-                            // let child_name = {
-                            //     let mut interner = self.interner.write().unwrap();
-                            //     let child_name = build_nested_module_name(
-                            //         interner.to_owned(),
-                            //         module.name,
-                            //         child_module.name,
-                            //     );
-                            //     interner.get_or_intern(child_name)
-                            // };
+                            let child_name = {
+                                let child_name =
+                                    build_nested_module_name(module.name, child_module.name);
+                                intern_string(&child_name)
+                            };
 
-                            // let indexed_module =
-                            //     self.build_module_index(child_module, Some(&module_index), scopes);
+                            let indexed_module =
+                                self.build_module_index(child_module, Some(&module_index), scopes);
 
-                            // scope
-                            //     .borrow_mut()
-                            //     .modules
-                            //     .insert(child_name, indexed_module);
+                            scope
+                                .borrow_mut()
+                                .modules
+                                .insert(child_name, indexed_module);
                         }
                         Expression::BinaryOperation(operation) => {
                             if operation.operator == BinaryOperator::Match {
@@ -315,13 +308,9 @@ fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
     }
 }
 
-fn build_nested_module_name(
-    interner: StringInterner<DefaultBackend>,
-    parent_name: DefaultSymbol,
-    child_name: DefaultSymbol,
-) -> String {
-    let parent_name = interner.resolve(parent_name).unwrap();
-    let module_name = interner.resolve(child_name).unwrap();
+fn build_nested_module_name(parent_name: DefaultSymbol, child_name: DefaultSymbol) -> String {
+    let parent_name = resolve_string(parent_name).unwrap();
+    let module_name = resolve_string(child_name).unwrap();
     format!("{}.{}", parent_name, module_name)
 }
 
@@ -336,6 +325,7 @@ mod tests {
 
     use crate::{
         indexer::{extract_identifiers, FunctionIndex, ScopeIndex},
+        interner::{get_string, resolve_string},
         loc,
         simple_parser::{Expression, Location, Parser},
     };
@@ -348,8 +338,8 @@ mod tests {
         };
     }
 
-    fn index_module(interner: Arc<RwLock<StringInterner<DefaultBackend>>>, code: &str) -> Index {
-        let indexer = Indexer::new(interner);
+    fn index_module(code: &str) -> Index {
+        let indexer = Indexer::new();
 
         if let Expression::Module(m) = parse(code) {
             indexer.index(&m).unwrap()
@@ -359,8 +349,7 @@ mod tests {
     }
 
     fn parse(code: &str) -> Expression {
-        let interner = Arc::new(RwLock::new(StringInterner::default()));
-        let parser = Parser::new(interner, code.to_owned(), "nofile".to_owned());
+        let parser = Parser::new(code.to_owned(), "nofile".to_owned());
         parser.parse()
     }
 
@@ -382,8 +371,7 @@ mod tests {
             end
         end
         "#;
-        let interner = Arc::new(RwLock::new(StringInterner::default()));
-        let result = index_module(interner.clone(), code);
+        let result = index_module(code);
 
         let parent_scope = ScopeIndex {
             parent_index: None,
@@ -402,17 +390,18 @@ mod tests {
             parent_index: Some(0),
             ..ScopeIndex::default()
         };
-        let module_name = i_str!(interner, "MyModule");
+
+        let module_name = get_string("MyModule").unwrap();
 
         let target = Index {
             scopes: vec![parent_scope, func_scope],
             module: ModuleIndex {
-                location: loc!(1, 18, interner),
+                location: loc!(1, 18),
                 name: module_name,
                 docs: Some("this is a nice module!".to_owned()),
                 scope_index: 0,
                 functions: vec![FunctionIndex {
-                    location: loc!(11, 16, interner),
+                    location: loc!(11, 16),
                     is_private: false,
                     name: "func".to_owned(),
                     doc: None,
@@ -444,8 +433,7 @@ mod tests {
             end
         end
         "#;
-        let interner = Arc::new(RwLock::new(StringInterner::default()));
-        let result = index_module(interner.clone(), code);
+        let result = index_module(code);
 
         let parent_scope = ScopeIndex {
             parent_index: None,
@@ -464,17 +452,17 @@ mod tests {
             ..Default::default()
         };
 
-        let module_name = i_str!(interner, "MyModule");
+        let module_name = get_string("MyModule").unwrap();
         let target = Index {
             scopes: vec![parent_scope, a_scope, no_docs_scope],
             module: ModuleIndex {
-                location: loc!(1, 18, interner),
+                location: loc!(1, 18),
                 name: module_name,
                 docs: None,
                 scope_index: 0,
                 functions: vec![
                     FunctionIndex {
-                        location: loc!(8, 16, interner),
+                        location: loc!(8, 16),
                         is_private: false,
                         name: "a".to_string(),
                         doc: Some("sums two numbers".to_string()),
@@ -482,7 +470,7 @@ mod tests {
                         scope_index: 1,
                     },
                     FunctionIndex {
-                        location: loc!(11, 17, interner),
+                        location: loc!(11, 17),
                         is_private: true,
                         name: "no_docs".to_string(),
                         doc: None,
@@ -497,50 +485,51 @@ mod tests {
         assert_eq!(result, target)
     }
 
-    // #[test]
-    // fn nested_modules() {
-    //     let code = r#"
-    //     defmodule MyModule do
-    //         defmodule Inner do
+    #[test]
+    fn nested_modules() {
+        let code = r#"
+        defmodule MyModule do
+            defmodule Inner do
 
-    //         end
-    //     end
-    //     "#;
-    //     let interner = Arc::new(RwLock::new(StringInterner::default()));
-    //     let result = index_module(interner.clone(), code);
+            end
+        end
+        "#;
+        let result = index_module(code);
 
-    //     let parent_scope = ScopeIndex {
-    //         parent_index: None,
-    //         modules: HashMap::from_iter(vec![(
-    //             i_str!(interner, "MyModule.Inner"),
-    //             ModuleIndex {
-    //                 location: loc!(2, 22, interner),
-    //                 name: i_str!(interner, "MyModule.Inner"),
-    //                 scope_index: 1,
-    //                 ..Default::default()
-    //             },
-    //         )]),
-    //         ..Default::default()
-    //     };
+        let inner_module_name = get_string("MyModule.Inner").unwrap();
+        let parent_scope = ScopeIndex {
+            parent_index: None,
+            modules: HashMap::from_iter(vec![(
+                inner_module_name,
+                ModuleIndex {
+                    location: loc!(2, 22),
+                    name: inner_module_name,
+                    scope_index: 1,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
 
-    //     let inner_scope = ScopeIndex {
-    //         parent_index: Some(0),
-    //         ..Default::default()
-    //     };
+        let inner_scope = ScopeIndex {
+            parent_index: Some(0),
+            ..Default::default()
+        };
 
-    //     let target = Index {
-    //         scopes: vec![parent_scope, inner_scope],
-    //         module: ModuleIndex {
-    //             location: loc!(1, 18, interner),
-    //             name: i_str!(interner, "MyModule"),
-    //             docs: None,
-    //             scope_index: 0,
-    //             ..Default::default()
-    //         },
-    //     };
+        let module_name = get_string("MyModule").unwrap();
+        let target = Index {
+            scopes: vec![parent_scope, inner_scope],
+            module: ModuleIndex {
+                location: loc!(1, 18),
+                name: module_name,
+                docs: None,
+                scope_index: 0,
+                ..Default::default()
+            },
+        };
 
-    //     assert_eq!(result, target)
-    // }
+        assert_eq!(result, target)
+    }
 
     #[test]
     fn extract_variable_from_simple_match() {

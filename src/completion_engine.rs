@@ -16,7 +16,6 @@ pub enum GlobalIndexMessage {
 }
 
 pub struct CompletionEngine {
-    interner: Arc<RwLock<StringInterner<DefaultBackend>>>,
     modules_index: HashMap<DefaultSymbol, Index>,
 }
 
@@ -46,9 +45,8 @@ pub enum CompletionItem {
 }
 
 impl CompletionEngine {
-    pub fn new(interner: Arc<RwLock<StringInterner<DefaultBackend>>>) -> Self {
+    pub fn new() -> Self {
         Self {
-            interner,
             modules_index: HashMap::new(),
         }
     }
@@ -64,15 +62,17 @@ impl CompletionEngine {
                 .modules_index
                 .iter()
                 .filter(|(s, _)| {
-                    let interner = self.interner.read().unwrap();
-                    let module_name = interner.resolve(**s).unwrap();
-                    module_name.starts_with(&query.query)
+                    todo!();
+                    // let interner = self.interner.read().unwrap();
+                    // let module_name = interner.resolve(**s).unwrap();
+                    // module_name.starts_with(&query.query)
                 })
                 .take(10)
                 .map(|(s, _)| {
-                    let interner = self.interner.read().unwrap();
-                    let module_name = interner.resolve(*s).unwrap();
-                    CompletionItem::Module(module_name.to_string())
+                    todo!();
+                    // let interner = self.interner.read().unwrap();
+                    // let module_name = interner.resolve(*s).unwrap();
+                    // CompletionItem::Module(module_name.to_string())
                 })
                 .collect::<Vec<_>>(),
             CompletionContext::ModuleContents(module_name) => {

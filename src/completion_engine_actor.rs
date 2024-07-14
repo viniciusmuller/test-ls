@@ -7,11 +7,8 @@ use string_interner::StringInterner;
 
 use crate::completion_engine::{CompletionEngine, GlobalIndexMessage};
 
-pub fn start(
-    interner: Arc<RwLock<StringInterner<StringBackend>>>,
-    rx: Receiver<GlobalIndexMessage>,
-) {
-    let mut engine = CompletionEngine::new(interner);
+pub fn start(rx: Receiver<GlobalIndexMessage>) {
+    let mut engine = CompletionEngine::new();
 
     while let Ok(msg) = rx.recv() {
         match msg {
