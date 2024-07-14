@@ -14,7 +14,7 @@ pub fn start(rx: Receiver<GlobalIndexMessage>) {
         match msg {
             GlobalIndexMessage::NewModule(i) => engine.add_module(i),
             GlobalIndexMessage::FinishedIndexing(total_time) => {
-                info!("Finished indexing in {:.2?}", total_time);
+                engine.finished_indexing(total_time);
             }
             GlobalIndexMessage::Query(query) => {
                 engine.query(query);
