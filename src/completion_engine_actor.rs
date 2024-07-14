@@ -5,7 +5,7 @@ use log::info;
 use string_interner::backend::StringBackend;
 use string_interner::StringInterner;
 
-use crate::completion_engine::{CompletionEngine, CompletionQuery, GlobalIndexMessage};
+use crate::completion_engine::{CompletionEngine, GlobalIndexMessage};
 
 pub fn start(
     interner: Arc<RwLock<StringInterner<StringBackend>>>,

@@ -3,29 +3,35 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use string_interner::{DefaultBackend, StringInterner};
+use string_interner::{DefaultBackend, DefaultSymbol, StringInterner};
 use tree_sitter::{Node, Tree};
 
-use crate::indexer::{build_index, Index, ModuleIndex};
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TSError {
-    path: String,
-    start: Point,
-    end: Point,
-}
+use crate::indexer::{Index, Indexer};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
-pub struct Point {
+pub struct Location {
+    pub file: DefaultSymbol,
     pub line: usize,
     pub column: usize,
 }
 
+impl Default for Location {
+    fn default() -> Self {
+        let mut interner = StringInterner::default();
+
+        Location {
+            file: interner.get_or_intern("test"),
+            line: 1,
+            column: 0,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Module {
-    pub name: String,
+    pub name: DefaultSymbol,
     pub body: Box<Expression>,
-    pub location: Point,
+    pub location: Location,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -34,7 +40,7 @@ pub struct FunctionDef {
     pub is_private: bool,
     pub parameters: Vec<Expression>,
     pub body: Box<Expression>,
-    pub location: Point,
+    pub location: Location,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -148,48 +154,14 @@ pub enum Expression {
     Block(Vec<Expression>),
     Identifier(String),
     Unparsed(String, Vec<Expression>),
-    TreeSitterError(Point, Point),
-}
-
-impl Display for Expression {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Expression::FunctionDef(function) => write!(f, "FunctionDef({})", function.name),
-            Expression::Module(module) => write!(f, "Module({})", module.name),
-            Expression::Attribute(name, _) => write!(f, "Attribute({})", name),
-            Expression::Use(exprs) => write!(f, "Use({})", exprs.join(", ")),
-            Expression::Tuple(_exprs) => write!(f, "Tuple()"),
-            Expression::List(_exprs) => write!(f, "List()"),
-            Expression::Import(exprs) => write!(f, "Use({})", exprs.join(", ")),
-            Expression::Alias(exprs) => write!(f, "Use({})", exprs.join(", ")),
-            Expression::Require(exprs) => write!(f, "Use({})", exprs.join(", ")),
-            Expression::BinaryOperation(operation) => write!(
-                f,
-                "Binary({} {:?} {}}})",
-                operation.left, operation.operator, operation.right
-            ),
-            Expression::Block(_) => write!(f, "Block()"),
-            Expression::String(s) => write!(f, "String({})", s),
-            Expression::Integer(i) => write!(f, "Integer({})", i),
-            Expression::Float(Float(fl)) => write!(f, "Float({})", fl),
-            Expression::Atom(a) => write!(f, "Atom({})", a),
-            Expression::Bool(b) => write!(f, "Bool({})", b),
-            Expression::Identifier(id) => write!(f, "Identifier({})", id),
-            Expression::Unparsed(grammar_name, _) => write!(f, "Unparsed({})", grammar_name),
-            Expression::TreeSitterError(start_pos, _) => write!(
-                f,
-                "TreeSitterError({}, {})",
-                start_pos.line, start_pos.column
-            ),
-        }
-    }
+    TreeSitterError(Location, Location),
 }
 
 #[derive(Debug)]
 pub struct Parser {
     interner: Arc<RwLock<StringInterner<DefaultBackend>>>,
     code: String,
-    filepath: String,
+    filepath: DefaultSymbol,
 }
 
 impl Parser {
@@ -198,6 +170,8 @@ impl Parser {
         code: String,
         filepath: String,
     ) -> Self {
+        let filepath = interner.write().unwrap().get_or_intern(filepath);
+
         Parser {
             code,
             filepath,
@@ -227,7 +201,8 @@ impl Parser {
                 for expression in expressions {
                     match expression {
                         Expression::Module(ref module) => {
-                            if let Some(module) = build_index(&module) {
+                            let indexer = Indexer::new(self.interner.clone());
+                            if let Some(module) = indexer.index(&module) {
                                 modules.push(module)
                             }
                         }
@@ -236,7 +211,8 @@ impl Parser {
                 }
             }
             Expression::Module(ref module) => {
-                if let Some(module) = build_index(&module) {
+                let indexer = Indexer::new(self.interner.clone());
+                if let Some(module) = indexer.index(&module) {
                     modules.push(module)
                 }
             }
@@ -272,7 +248,7 @@ fn parse_expression(parser: &Parser, node: &Node) -> Expression {
     let grammar_name = node.grammar_name();
 
     match grammar_name {
-        "ERROR" => build_treesitter_error_node(node),
+        "ERROR" => build_treesitter_error_node(parser, node),
         "identifier" => Expression::Identifier(parse_identifier_node(parser, node)),
         "call" => parse_call_node(parser, node),
         "string" => parse_string_node(parser, node),
@@ -567,11 +543,14 @@ fn try_parse_module(parser: &Parser, node: &Node) -> Option<Expression> {
     let module_name = try_parse_alias_grammar_name(parser, &name_node)?;
     let child = name_args_node.next_sibling()?;
     let body = try_parse_do_block(parser, &child)?;
+
+    let module_name_interned = parser.interner.write().unwrap().get_or_intern(module_name);
     let module = Module {
-        name: module_name.to_string(),
+        name: module_name_interned,
         body: Box::new(body),
-        location: tree_sitter_location_to_point(name_node.start_position()),
+        location: tree_sitter_location_to_point(parser, name_node.start_position()),
     };
+
     Some(Expression::Module(module))
 }
 
@@ -605,7 +584,7 @@ fn try_parse_function_definition(parser: &Parser, node: &Node) -> Option<Express
     };
 
     let function = FunctionDef {
-        location: tree_sitter_location_to_point(def_arguments_node.start_position()),
+        location: tree_sitter_location_to_point(parser, def_arguments_node.start_position()),
         is_private,
         parameters,
         name: function_name.to_string(),
@@ -732,45 +711,18 @@ fn try_parse_alias_grammar_name(parser: &Parser, node: &Node) -> Option<String> 
     }
 }
 
-fn build_treesitter_error_node(node: &Node) -> Expression {
+fn build_treesitter_error_node(parser: &Parser, node: &Node) -> Expression {
     Expression::TreeSitterError(
-        tree_sitter_location_to_point(node.start_position()),
-        tree_sitter_location_to_point(node.end_position()),
+        tree_sitter_location_to_point(parser, node.start_position()),
+        tree_sitter_location_to_point(parser, node.end_position()),
     )
 }
 
-fn tree_sitter_location_to_point(ts_point: tree_sitter::Point) -> Point {
-    Point {
+fn tree_sitter_location_to_point(parser: &Parser, ts_point: tree_sitter::Point) -> Location {
+    Location {
+        file: parser.filepath,
         line: ts_point.row,
         column: ts_point.column,
-    }
-}
-
-fn print_expression(ast: &Expression, depth: usize) {
-    match ast {
-        Expression::Unparsed(expr, children) => {
-            println!("{}{}└ {}", "  ".repeat(depth), depth, expr);
-
-            for child in children {
-                print_expression(child, depth + 1)
-            }
-        }
-        Expression::Module(module) => {
-            println!("{}{}└ {}", "  ".repeat(depth), depth, ast);
-            print_expression(&module.body, depth + 1)
-        }
-        Expression::FunctionDef(function) => {
-            println!("{}{}└ {}", "  ".repeat(depth), depth, ast);
-            print_expression(&function.body, depth + 1)
-        }
-        Expression::Block(scope) => {
-            println!("{}{}└ {}", "  ".repeat(depth), depth, ast);
-
-            for child in scope {
-                print_expression(child, depth + 1)
-            }
-        }
-        expr => println!("{}{}└ {}", "  ".repeat(depth), depth, expr),
     }
 }
 
@@ -781,6 +733,7 @@ mod tests {
 
     use crate::simple_parser::BinaryOperator;
     use pretty_assertions::assert_eq;
+    use string_interner::DefaultBackend;
     use string_interner::StringInterner;
 
     use super::BinaryOperation;
@@ -788,12 +741,11 @@ mod tests {
     use super::Float;
     use super::FunctionDef;
     use super::List;
+    use super::Location;
     use super::Module;
     use super::Parser;
-    use super::Point;
 
-    fn parse(code: &str) -> Expression {
-        let interner = Arc::new(RwLock::new(StringInterner::default()));
+    fn parse(interner: Arc<RwLock<StringInterner<DefaultBackend>>>, code: &str) -> Expression {
         let parser = Parser::new(interner, code.to_owned(), "nofile".to_owned());
         parser.parse()
     }
@@ -828,10 +780,10 @@ mod tests {
 
     #[macro_export]
     macro_rules! module {
-        ($name:expr, $body:expr, $loc:expr) => {
+        ($interner:expr, $name:expr, $body:expr, $loc:expr) => {
             Expression::Module(Module {
                 location: $loc,
-                name: $name.to_string(),
+                name: $interner.write().unwrap().get_or_intern($name),
                 body: Box::new($body),
             })
         };
@@ -839,12 +791,18 @@ mod tests {
 
     #[macro_export]
     macro_rules! loc {
-        ($line:expr, $col:expr) => {
-            Point {
+        ($line:expr, $col:expr, $interner:expr) => {{
+            let filepath = {
+                let mut interner = $interner.write().unwrap();
+                interner.get_or_intern("nofile")
+            };
+
+            Location {
+                file: filepath,
                 line: $line,
                 column: $col,
             }
-        };
+        }};
     }
 
     // TODO: reuse code along these two def/defp macros
@@ -975,7 +933,8 @@ mod tests {
     #[test]
     fn parse_identifier() {
         let code = "my_variable_name";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let target = id!("my_variable_name");
         assert_eq!(result, target);
     }
@@ -983,7 +942,8 @@ mod tests {
     #[test]
     fn parse_tree_sitter_error() {
         let code = "<%= a %>";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
 
         match result {
             Expression::TreeSitterError(_, _) => {}
@@ -994,7 +954,8 @@ mod tests {
     #[test]
     fn parse_empty_file() {
         let code = "";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = block!();
         assert_eq!(result, expected)
     }
@@ -1005,15 +966,18 @@ mod tests {
         defmodule MyModule do
         end
         ";
-        let result = parse(code);
-        let expected = module!("MyModule", block!(), loc!(1, 18));
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner.clone(), code);
+        let loc = loc!(1, 18, interner);
+        let expected = module!(interner, "MyModule", block!(), loc);
         assert_eq!(result, expected)
     }
 
     #[test]
     fn parse_single_line_blocks() {
         let code = "(a = 1; a + 1)";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = block!(
             binary_operation!(id!("a"), BinaryOperator::Match, int!(1)),
             binary_operation!(id!("a"), BinaryOperator::Plus, int!(1))
@@ -1029,7 +993,8 @@ mod tests {
             a + 1
         )
         ";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = block!(
             binary_operation!(id!("a"), BinaryOperator::Match, int!(1)),
             binary_operation!(id!("a"), BinaryOperator::Plus, int!(1))
@@ -1044,12 +1009,13 @@ mod tests {
             a + b
         end
         ";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner.clone(), code);
         let expected = def!(
             "public",
             vec![id!("a"), id!("b")],
             block!(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
-            loc!(1, 12)
+            loc!(1, 12, interner)
         );
         assert_eq!(result, expected)
     }
@@ -1061,12 +1027,13 @@ mod tests {
             a + b
         end
         ";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner.clone(), code);
         let expected = defp!(
             "my_func",
             vec![id!("a"), id!("b")],
             block!(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
-            loc!(1, 13)
+            loc!(1, 13, interner)
         );
         assert_eq!(result, expected)
     }
@@ -1078,12 +1045,13 @@ mod tests {
             a + b
         end
         ";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner.clone(), code);
         let expected = defp!(
             "my_func",
             vec![],
             block!(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
-            loc!(1, 13)
+            loc!(1, 13, interner)
         );
         assert_eq!(result, expected);
 
@@ -1092,7 +1060,7 @@ mod tests {
             a + b
         end
         ";
-        let result = parse(code);
+        let result = parse(interner.clone(), code);
         assert_eq!(result, expected)
     }
 
@@ -1101,12 +1069,13 @@ mod tests {
         let code = "
         defp my_func(a, b), do: a + b
         ";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner.clone(), code);
         let expected = defp!(
             "my_func",
             vec![id!("a"), id!("b")],
             block!(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
-            loc!(1, 13)
+            loc!(1, 13, interner)
         );
         assert_eq!(result, expected);
     }
@@ -1116,19 +1085,21 @@ mod tests {
         let code = "
         defp my_func(), do: a + b
         ";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner.clone(), code);
         let expected = defp!(
             "my_func",
             vec![],
             block!(binary_operation!(id!("a"), BinaryOperator::Plus, id!("b"))),
-            loc!(1, 13)
+            loc!(1, 13, interner)
         );
         assert_eq!(result, expected);
 
         let code = "
         defp my_func(), do: a + b
         ";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         assert_eq!(result, expected)
     }
 
@@ -1137,7 +1108,8 @@ mod tests {
         let code = r#"
         @doc "my docs"
         "#;
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = attribute!("doc", string!("my docs"));
         assert_eq!(result, expected)
     }
@@ -1147,7 +1119,8 @@ mod tests {
         let code = r#"
         "simple string!"
         "#;
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = string!("simple string!");
         assert_eq!(result, expected)
     }
@@ -1157,7 +1130,8 @@ mod tests {
         let code = r#"
         "today is #{weather}"
         "#;
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = string!("today is #{weather}");
         assert_eq!(result, expected)
     }
@@ -1167,7 +1141,8 @@ mod tests {
         let code = "
         \"newline incoming\n\"
         ";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = string!("newline incoming\n");
         assert_eq!(result, expected)
     }
@@ -1179,7 +1154,8 @@ mod tests {
         Heredoc string!
         """
         "#;
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = string!("\n        Heredoc string!\n        ");
         assert_eq!(result, expected)
     }
@@ -1187,7 +1163,8 @@ mod tests {
     #[test]
     fn parse_boolean_true() {
         let code = "true";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = bool!(true);
         assert_eq!(result, expected)
     }
@@ -1195,7 +1172,8 @@ mod tests {
     #[test]
     fn parse_boolean_false() {
         let code = "false";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = bool!(false);
         assert_eq!(result, expected)
     }
@@ -1203,7 +1181,8 @@ mod tests {
     #[test]
     fn parse_atom() {
         let code = ":custom_atom";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = atom!("custom_atom");
         assert_eq!(result, expected)
     }
@@ -1211,7 +1190,8 @@ mod tests {
     #[test]
     fn parse_module_name() {
         let code = "ModuleName";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = atom!("ModuleName");
         assert_eq!(result, expected)
     }
@@ -1219,7 +1199,8 @@ mod tests {
     #[test]
     fn parse_integers() {
         let code = "10";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = int!(10);
         assert_eq!(result, expected)
     }
@@ -1227,7 +1208,8 @@ mod tests {
     #[test]
     fn parse_integers_underscored() {
         let code = "1_000";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = int!(1000);
         assert_eq!(result, expected)
     }
@@ -1235,7 +1217,8 @@ mod tests {
     #[test]
     fn parse_integers_hex() {
         let code = "0x777";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = int!(0x777);
         assert_eq!(result, expected)
     }
@@ -1243,7 +1226,8 @@ mod tests {
     #[test]
     fn parse_integers_binary() {
         let code = "0b011001";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = int!(0b011001);
         assert_eq!(result, expected)
     }
@@ -1251,7 +1235,8 @@ mod tests {
     #[test]
     fn parse_integers_octal() {
         let code = "0o721";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = int!(0o721);
         assert_eq!(result, expected)
     }
@@ -1259,7 +1244,8 @@ mod tests {
     #[test]
     fn parse_float() {
         let code = "10.0";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = float!(10.0);
         assert_eq!(result, expected)
     }
@@ -1267,7 +1253,8 @@ mod tests {
     #[test]
     fn parse_float_scientific() {
         let code = "0.1e4";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = float!(1000.0);
         assert_eq!(result, expected)
     }
@@ -1275,7 +1262,8 @@ mod tests {
     #[test]
     fn parse_binary_match() {
         let code = "a = 10";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = binary_operation!(id!("a"), BinaryOperator::Match, int!(10));
         assert_eq!(result, expected)
     }
@@ -1283,7 +1271,8 @@ mod tests {
     #[test]
     fn parse_empty_tuple() {
         let code = r#"{}"#;
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = tuple!();
         assert_eq!(result, expected)
     }
@@ -1291,7 +1280,8 @@ mod tests {
     #[test]
     fn parse_tuple() {
         let code = r#"{:ok, :success}"#;
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = tuple!(atom!("ok"), atom!("success"));
         assert_eq!(result, expected)
     }
@@ -1299,7 +1289,8 @@ mod tests {
     #[test]
     fn parse_tuple_trailing_comma() {
         let code = "{1, 2, 3,}";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = tuple!(int!(1), int!(2), int!(3));
         assert_eq!(result, expected)
     }
@@ -1307,7 +1298,8 @@ mod tests {
     #[test]
     fn parse_multi_alias() {
         let code = "alias MySystem.{Queries, Entities}";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = alias!("MySystem.Queries", "MySystem.Entities");
         assert_eq!(result, expected)
     }
@@ -1315,7 +1307,8 @@ mod tests {
     #[test]
     fn parse_alias() {
         let code = "alias MyModule";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = alias!("MyModule");
         assert_eq!(result, expected)
     }
@@ -1323,7 +1316,8 @@ mod tests {
     #[test]
     fn parse_import() {
         let code = "import Ecto.Query";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = import!("Ecto.Query");
         assert_eq!(result, expected)
     }
@@ -1331,7 +1325,8 @@ mod tests {
     #[test]
     fn parse_require() {
         let code = "require Logger";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = require!("Logger");
         assert_eq!(result, expected)
     }
@@ -1339,7 +1334,8 @@ mod tests {
     #[test]
     fn parse_use() {
         let code = "use Oban.Worker";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = use_!("Oban.Worker");
         assert_eq!(result, expected)
     }
@@ -1347,7 +1343,8 @@ mod tests {
     #[test]
     fn parse_empty_list() {
         let code = "[]";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = list!();
         assert_eq!(result, expected)
     }
@@ -1355,7 +1352,8 @@ mod tests {
     #[test]
     fn parse_list() {
         let code = "[:atom, 1, 2]";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = list!(atom!("atom"), int!(1), int!(2));
         assert_eq!(result, expected)
     }
@@ -1363,7 +1361,8 @@ mod tests {
     #[test]
     fn parse_list_trailing_comma() {
         let code = "[1, 2, 3, 4,]";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = list!(int!(1), int!(2), int!(3), int!(4));
         assert_eq!(result, expected)
     }
@@ -1371,7 +1370,8 @@ mod tests {
     #[test]
     fn parse_list_cons() {
         let code = "[:atom, 1, 2 | rest]";
-        let result = parse(code);
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let result = parse(interner, code);
         let expected = Expression::List(List {
             body: vec![atom!("atom"), int!(1), int!(2)],
             cons: Some(Box::new(id!("rest"))),

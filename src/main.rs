@@ -125,8 +125,19 @@ fn index_dir_recursive(
 
     completion_engine_tx
         .send(GlobalIndexMessage::Query(CompletionQuery {
-            query: "map_".to_owned(),
-            context: CompletionContext::Scope,
+            query: "ma".to_owned(),
+            context: CompletionContext::ModuleContents(
+                interner.write().unwrap().get("Enum").unwrap(),
+            ),
+        }))
+        .unwrap();
+
+    completion_engine_tx
+        .send(GlobalIndexMessage::Query(CompletionQuery {
+            query: "i".to_owned(),
+            context: CompletionContext::ModuleContents(
+                interner.write().unwrap().get("IO").unwrap(),
+            ),
         }))
         .unwrap();
 }
