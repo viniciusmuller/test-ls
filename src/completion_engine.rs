@@ -7,7 +7,7 @@ use std::{
 use log::trace;
 use string_interner::{DefaultBackend, DefaultSymbol, StringInterner};
 
-use crate::indexer::Index;
+use crate::{indexer::Index, interner::{get_string, resolve_string}};
 
 pub enum GlobalIndexMessage {
     NewModule(Index),
@@ -62,17 +62,13 @@ impl CompletionEngine {
                 .modules_index
                 .iter()
                 .filter(|(s, _)| {
-                    todo!();
-                    // let interner = self.interner.read().unwrap();
-                    // let module_name = interner.resolve(**s).unwrap();
-                    // module_name.starts_with(&query.query)
+                    let module_name = resolve_string(**s).unwrap();
+                    module_name.starts_with(&query.query)
                 })
                 .take(10)
                 .map(|(s, _)| {
-                    todo!();
-                    // let interner = self.interner.read().unwrap();
-                    // let module_name = interner.resolve(*s).unwrap();
-                    // CompletionItem::Module(module_name.to_string())
+                    let module_name = resolve_string(*s).unwrap();
+                    CompletionItem::Module(module_name.to_string())
                 })
                 .collect::<Vec<_>>(),
             CompletionContext::ModuleContents(module_name) => {
