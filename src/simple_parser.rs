@@ -1,5 +1,9 @@
-use std::fmt::Display;
+use std::{
+    fmt::Display,
+    sync::{Arc, RwLock},
+};
 
+use string_interner::{DefaultBackend, StringInterner};
 use tree_sitter::{Node, Tree};
 
 use crate::indexer::{build_index, Index, ModuleIndex};
@@ -181,15 +185,24 @@ impl Display for Expression {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Parser {
+    interner: Arc<RwLock<StringInterner<DefaultBackend>>>,
     code: String,
     filepath: String,
 }
 
 impl Parser {
-    pub fn new(code: String, filepath: String) -> Self {
-        Parser { code, filepath }
+    pub fn new(
+        interner: Arc<RwLock<StringInterner<DefaultBackend>>>,
+        code: String,
+        filepath: String,
+    ) -> Self {
+        Parser {
+            code,
+            filepath,
+            interner,
+        }
     }
 
     pub fn parse(&self) -> Expression {
@@ -763,8 +776,12 @@ fn print_expression(ast: &Expression, depth: usize) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
     use crate::simple_parser::BinaryOperator;
     use pretty_assertions::assert_eq;
+    use string_interner::StringInterner;
 
     use super::BinaryOperation;
     use super::Expression;
@@ -776,7 +793,8 @@ mod tests {
     use super::Point;
 
     fn parse(code: &str) -> Expression {
-        let parser = Parser::new(code.to_owned(), "nofile".to_owned());
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let parser = Parser::new(interner, code.to_owned(), "nofile".to_owned());
         parser.parse()
     }
 

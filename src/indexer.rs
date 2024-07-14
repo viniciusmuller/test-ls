@@ -275,7 +275,11 @@ fn parse_scope_expression(expression: &Expression, scope: &mut ScopeIndex) {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
-    use std::collections::{HashMap, HashSet};
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::{Arc, RwLock},
+    };
+    use string_interner::StringInterner;
 
     use crate::{
         indexer::{extract_identifiers, FunctionIndex, ScopeIndex},
@@ -294,7 +298,8 @@ mod tests {
     }
 
     fn parse(code: &str) -> Expression {
-        let parser = Parser::new(code.to_owned(), "nofile".to_owned());
+        let interner = Arc::new(RwLock::new(StringInterner::default()));
+        let parser = Parser::new(interner, code.to_owned(), "nofile".to_owned());
         parser.parse()
     }
 

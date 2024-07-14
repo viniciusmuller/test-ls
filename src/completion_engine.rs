@@ -1,9 +1,11 @@
 use std::{
     collections::HashMap,
+    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
 use log::info;
+use string_interner::{DefaultBackend, StringInterner};
 
 use crate::indexer::Index;
 
@@ -14,9 +16,9 @@ pub enum GlobalIndexMessage {
 }
 
 pub struct CompletionEngine {
+    interner: Arc<RwLock<StringInterner<DefaultBackend>>>,
     modules_ids_index: Vec<String>,
     modules_index: HashMap<usize, Index>,
-    functions_index: HashMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -44,10 +46,10 @@ pub enum CompletionItem {
 }
 
 impl CompletionEngine {
-    pub fn new() -> Self {
+    pub fn new(interner: Arc<RwLock<StringInterner<DefaultBackend>>>) -> Self {
         Self {
+            interner,
             modules_index: HashMap::new(),
-            functions_index: HashMap::new(),
             modules_ids_index: vec![],
         }
     }
@@ -76,18 +78,7 @@ impl CompletionEngine {
                 })
                 .collect::<Vec<_>>(),
             CompletionContext::ModuleContents => todo!(),
-            CompletionContext::Scope => self
-                .functions_index
-                .iter()
-                .filter(|(k, _)| k.starts_with(&query.query))
-                .take(10)
-                .map(|(k, v)| {
-                    let index = v.to_owned().to_owned();
-                    let module_name = &self.modules_ids_index[index];
-                    let result = format!("{}.{}", module_name, k);
-                    CompletionItem::ModuleFunction(result)
-                })
-                .collect::<Vec<_>>(),
+            CompletionContext::Scope => todo!(),
         };
         let elapsed = now.elapsed();
 
@@ -99,14 +90,6 @@ impl CompletionEngine {
     pub fn add_module(&mut self, index: Index) {
         let module_id = self.modules_ids_index.len();
         self.modules_ids_index.push(index.module.name.clone());
-
-        for function in &index.module.functions {
-            if !function.is_private {
-                self.functions_index
-                    .insert(function.name.clone(), module_id.clone());
-            }
-        }
-
         self.modules_index.insert(module_id, index);
     }
 }
