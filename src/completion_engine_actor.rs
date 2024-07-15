@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::{
-    completion_engine::{CompletionEngine, CompletionQuery},
+    completion_engine::{CompletionEngine, CursorContext},
     indexer::Index,
 };
 
@@ -14,7 +14,7 @@ use crate::completion_engine::CompletionItem;
 pub enum CompletionEngineMessage {
     NewModule(Index),
     FinishedIndexing(Duration),
-    Query(CompletionQuery),
+    Query(CursorContext),
 }
 
 pub struct CompletionEngineActor {

@@ -7,7 +7,10 @@ use log::{info, trace};
 use string_interner::DefaultSymbol;
 use trie_rs::{Trie, TrieBuilder};
 
-use crate::{indexer::Index, interner::resolve_string};
+use crate::{
+    indexer::Index,
+    interner::{get_string, resolve_string},
+};
 
 pub struct CompletionEngine {
     modules_index: HashMap<DefaultSymbol, Index>,
@@ -16,16 +19,19 @@ pub struct CompletionEngine {
 }
 
 #[derive(Debug)]
-pub enum CompletionContext {
-    Module,
-    ModuleContents(DefaultSymbol),
-    Scope,
+pub enum CursorContext {
+    Dot(DotContext),
+    Module(String),
+    Identifier(String),
+    Unknown,
 }
 
+/// When we find the cursor position in a dot, this represents the left hand side of the dot.
 #[derive(Debug)]
-pub struct CompletionQuery {
-    pub query: String,
-    pub context: CompletionContext,
+pub enum DotContext {
+    Module(String, String),
+    Identifier(String, String),
+    Other(String, String),
 }
 
 pub enum CompletionKind {
@@ -51,16 +57,16 @@ impl CompletionEngine {
 
     // TODO: will need current scope here
     // TODO: function to get current scope
-    pub fn query(&self, query: CompletionQuery) -> Vec<CompletionItem> {
-        trace!("Got query: {:?}", query);
+    pub fn query(&self, ctx: CursorContext) -> Vec<CompletionItem> {
+        trace!("Got query: {:?}", ctx);
 
         let now = Instant::now();
-        let query_result = match query.context {
-            CompletionContext::Module => match self.modules_trie {
+        let vec = match ctx {
+            CursorContext::Module(module) => match self.modules_trie {
                 None => vec![],
                 Some(ref trie) => {
                     let result: Vec<CompletionItem> = trie
-                        .predictive_search(&query.query)
+                        .predictive_search(&module)
                         .into_iter()
                         .take(10)
                         .map(CompletionItem::Module)
@@ -68,21 +74,24 @@ impl CompletionEngine {
                     result
                 }
             },
-            CompletionContext::ModuleContents(module_name) => {
-                match self.modules_index.get(&module_name) {
-                    Some(index) => index
+            CursorContext::Dot(DotContext::Module(module_name, right)) => get_string(&module_name)
+                .and_then(|sym| self.modules_index.get(&sym))
+                .map(|index| {
+                    index
                         .module
                         .functions
                         .iter()
-                        .filter(|f| f.name.starts_with(&query.query))
+                        .filter(|f| f.name.starts_with(&right))
                         .take(10)
                         .map(|f| CompletionItem::Function(f.name.to_owned()))
-                        .collect(),
-                    None => vec![],
-                }
-            }
-            CompletionContext::Scope => todo!(),
+                        .collect()
+                })
+                .unwrap_or(vec![]),
+            CursorContext::Dot(_) => vec![],
+            CursorContext::Identifier(_) => todo!(),
+            CursorContext::Unknown => todo!(),
         };
+        let query_result = vec;
         let elapsed = now.elapsed();
 
         trace!("Query result: {:?}", query_result);

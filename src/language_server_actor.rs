@@ -7,7 +7,7 @@ use lsp_types::{CompletionItemKind, OneOf, ServerCapabilities};
 use serde_json::{json, Value};
 
 use crate::{
-    completion_engine::{CompletionContext, CompletionQuery},
+    completion_engine::CursorContext,
     completion_engine_actor::{CompletionEngineActor, CompletionEngineMessage},
 };
 
@@ -131,13 +131,9 @@ async fn handle_completion_request(
 
     let items = language_server
         .completion_engine_addr
-        .send(CompletionEngineMessage::Query(CompletionQuery {
-            // TODO: extract query and context from buffer
-            // TODO: add tests for this module
-            // ^ for this, we need to better decouple the server IO logic with its features
-            query: "Comp".to_owned(),
-            context: CompletionContext::Module,
-        }))
+        .send(CompletionEngineMessage::Query(CursorContext::Module(
+            "Comp".to_owned(),
+        )))
         .await
         .unwrap();
 
