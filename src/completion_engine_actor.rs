@@ -1,24 +1,52 @@
-use std::sync::mpsc::Receiver;
-use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-use log::info;
-use string_interner::backend::StringBackend;
-use string_interner::StringInterner;
+use crate::{
+    completion_engine::{CompletionEngine, CompletionQuery},
+    indexer::Index,
+};
 
-use crate::completion_engine::{CompletionEngine, GlobalIndexMessage};
+use actix::prelude::*;
 
-pub fn start(rx: Receiver<GlobalIndexMessage>) {
-    let mut engine = CompletionEngine::new();
+use crate::completion_engine::CompletionItem;
 
-    while let Ok(msg) = rx.recv() {
+#[derive(Message)]
+#[rtype(result = "Vec<CompletionItem>")]
+pub enum CompletionEngineMessage {
+    NewModule(Index),
+    FinishedIndexing(Duration),
+    Query(CompletionQuery),
+}
+
+pub struct CompletionEngineActor {
+    completion_engine: CompletionEngine,
+}
+
+impl Actor for CompletionEngineActor {
+    type Context = Context<Self>;
+}
+
+impl Handler<CompletionEngineMessage> for CompletionEngineActor {
+    type Result = Vec<CompletionItem>;
+
+    fn handle(&mut self, msg: CompletionEngineMessage, _ctx: &mut Self::Context) -> Self::Result {
         match msg {
-            GlobalIndexMessage::NewModule(i) => engine.add_module(i),
-            GlobalIndexMessage::FinishedIndexing(total_time) => {
-                engine.finished_indexing(total_time);
+            CompletionEngineMessage::NewModule(i) => {
+                self.completion_engine.add_module(i);
+                vec![]
             }
-            GlobalIndexMessage::Query(query) => {
-                engine.query(query);
+            CompletionEngineMessage::FinishedIndexing(total_time) => {
+                self.completion_engine.finished_indexing(total_time);
+                vec![]
             }
+            CompletionEngineMessage::Query(query) => self.completion_engine.query(query),
+        }
+    }
+}
+
+impl Default for CompletionEngineActor {
+    fn default() -> Self {
+        Self {
+            completion_engine: CompletionEngine::new(),
         }
     }
 }

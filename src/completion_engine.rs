@@ -9,12 +9,6 @@ use trie_rs::{Trie, TrieBuilder};
 
 use crate::{indexer::Index, interner::resolve_string};
 
-pub enum GlobalIndexMessage {
-    NewModule(Index),
-    FinishedIndexing(Duration),
-    Query(CompletionQuery),
-}
-
 pub struct CompletionEngine {
     modules_index: HashMap<DefaultSymbol, Index>,
     modules_trie_builder: TrieBuilder<u8>,
@@ -69,7 +63,7 @@ impl CompletionEngine {
                         .predictive_search(&query.query)
                         .into_iter()
                         .take(10)
-                        .map(|a| CompletionItem::Module(a))
+                        .map(CompletionItem::Module)
                         .collect();
                     result
                 }

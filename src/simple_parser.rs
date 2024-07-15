@@ -718,7 +718,6 @@ fn tree_sitter_location_to_point(parser: &Parser, ts_point: tree_sitter::Point) 
 #[cfg(test)]
 mod tests {
     use crate::simple_parser::BinaryOperator;
-    use crate::interner::intern_string;
 
     use pretty_assertions::assert_eq;
 
