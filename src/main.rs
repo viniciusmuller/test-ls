@@ -10,15 +10,39 @@ use std::{env, error::Error, ffi::OsStr, fs, time::Instant};
 
 use actix::{Actor, Addr, System};
 use completion_engine_actor::{CompletionEngineActor, CompletionEngineMessage};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::fmt;
 use walkdir::WalkDir;
+
+fn init_tracing() -> WorkerGuard {
+    use tracing_subscriber::prelude::*;
+
+    let base_dirs = directories::BaseDirs::new().expect("Failed to start base dirs");
+    let data_dir = base_dirs.data_local_dir();
+    let logs_directory = data_dir.join("test-ls-logs/");
+
+    let file_appender = tracing_appender::rolling::hourly(logs_directory, "prefix.log");
+    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+
+    let subscriber = fmt::Subscriber::builder()
+        // subscriber configuration
+        // .with_env_filter("server")
+        // .with_max_level(tracing::Level::DEBUG)
+        .finish()
+        // add additional writers
+        .with(fmt::Layer::default().with_writer(file_writer));
+
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("Unable to set global tracing subscriber");
+
+    guard
+}
 
 #[actix::main]
 async fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
-    env_logger::init();
+    let _guard = init_tracing();
 
     let completion_engine_addr = completion_engine_actor::CompletionEngineActor::default().start();
-    // let _language_server_addr =
-    //     language_server_actor::LanguageServerActor::new(completion_engine_addr.clone()).start();
 
     indexer(completion_engine_addr.clone()).await;
 
@@ -28,10 +52,6 @@ async fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     // stop system and exit
     System::current().stop();
-
-    // index_handle.join().unwrap();
-    // completion_engine_actor.join().unwrap();
-    // server_handle.join().unwrap();
 
     Ok(())
 }

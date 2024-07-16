@@ -3,8 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::{info, trace};
 use string_interner::DefaultSymbol;
+use tracing::{info, trace};
 use trie_rs::{Trie, TrieBuilder};
 
 use crate::{

@@ -313,27 +313,18 @@ fn build_nested_module_name(parent_name: DefaultSymbol, child_name: DefaultSymbo
 
 #[cfg(test)]
 mod tests {
+    use crate::simple_parser::Location;
     use pretty_assertions::assert_eq;
-    use std::{
-        collections::{HashMap, HashSet},
-        sync::{Arc, RwLock},
-    };
-    use string_interner::{DefaultBackend, StringInterner};
+    use std::collections::{HashMap, HashSet};
 
     use crate::{
         indexer::{extract_identifiers, FunctionIndex, ScopeIndex},
-        interner::{get_string, resolve_string},
+        interner::get_string,
         loc,
-        simple_parser::{Expression, Location, Parser},
+        simple_parser::{Expression, Parser},
     };
 
     use super::{Index, Indexer, ModuleIndex};
-
-    macro_rules! i_str {
-        ( $interner:expr, $string:expr ) => {
-            $interner.write().unwrap().get_or_intern($string)
-        };
-    }
 
     fn index_module(code: &str) -> Index {
         let indexer = Indexer::new();

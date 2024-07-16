@@ -1,10 +1,12 @@
 use std::error::Error;
 
 use actix::Addr;
-use log::{info, trace};
+use tracing::{info, trace};
 use lsp_server::{Connection, Message, RequestId};
 use lsp_types::{CompletionItemKind, OneOf, ServerCapabilities};
 use serde_json::{json, Value};
+
+// TODO: log to specific file maybe in userdata so we can easily debug lsp logs
 
 use crate::{
     completion_engine::CursorContext,
