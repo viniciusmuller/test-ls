@@ -2,7 +2,7 @@ mod completion_engine;
 mod completion_engine_actor;
 mod indexer;
 mod interner;
-mod language_server_actor;
+mod language_server;
 mod parser;
 mod simple_parser;
 
@@ -25,11 +25,7 @@ fn init_tracing() -> WorkerGuard {
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     let subscriber = fmt::Subscriber::builder()
-        // subscriber configuration
-        // .with_env_filter("server")
-        // .with_max_level(tracing::Level::DEBUG)
         .finish()
-        // add additional writers
         .with(fmt::Layer::default().with_writer(file_writer));
 
     tracing::subscriber::set_global_default(subscriber)
@@ -46,11 +42,11 @@ async fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     indexer(completion_engine_addr.clone()).await;
 
-    language_server_actor::start_server(completion_engine_addr)
-        .await
-        .unwrap();
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
 
-    // stop system and exit
+    language_server::init(stdin, stdout).await;
+
     System::current().stop();
 
     Ok(())
