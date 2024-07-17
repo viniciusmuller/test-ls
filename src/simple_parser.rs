@@ -169,7 +169,7 @@ impl Parser {
     }
 
     pub fn parse(&self) -> Expression {
-        let tree = get_tree(&self.code);
+        let tree = self.get_tree(&self.code);
         let root_node = tree.root_node();
         let ast = match parse_expression(self, &root_node) {
             // Ignore "source" root node and normalize block if single expression
@@ -180,6 +180,14 @@ impl Parser {
         };
 
         ast
+    }
+
+    fn get_tree(&self, code: &str) -> Tree {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_elixir::language())
+            .expect("Error loading elixir grammar");
+        parser.parse(code, None).unwrap()
     }
 
     pub fn index(&self, ast: &Expression) -> Vec<Index> {
@@ -223,14 +231,6 @@ fn normalize_block(block: &mut Vec<Expression>) -> Expression {
     } else {
         Expression::Block(block.to_vec())
     }
-}
-
-fn get_tree(code: &str) -> Tree {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_elixir::language())
-        .expect("Error loading elixir grammar");
-    parser.parse(code, None).unwrap()
 }
 
 fn parse_expression(parser: &Parser, node: &Node) -> Expression {

@@ -1,5 +1,6 @@
 mod completion_engine;
 mod completion_engine_actor;
+mod document_store;
 mod indexer;
 mod interner;
 mod language_server;
@@ -21,7 +22,7 @@ fn init_tracing() -> WorkerGuard {
     let data_dir = base_dirs.data_local_dir();
     let logs_directory = data_dir.join("test-ls-logs/");
 
-    let file_appender = tracing_appender::rolling::hourly(logs_directory, "prefix.log");
+    let file_appender = tracing_appender::rolling::daily(logs_directory, "lsp.log");
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     let subscriber = fmt::Subscriber::builder()

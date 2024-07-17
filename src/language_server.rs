@@ -2,6 +2,7 @@ use tokio::io::{Stdin, Stdout};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tracing::{info, trace};
 
 #[derive(Debug)]
 struct Backend {
@@ -13,6 +14,15 @@ impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::INCREMENTAL),
+                        will_save: None,
+                        will_save_wait_until: None,
+                        save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+                    },
+                )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions::default()),
                 definition_provider: Some(OneOf::Left(true)),
@@ -38,6 +48,19 @@ impl LanguageServer for Backend {
             CompletionItem::new_simple("Hello".to_string(), "Some detail".to_string()),
             CompletionItem::new_simple("Bye".to_string(), "More detail".to_string()),
         ])))
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        dbg!(&params);
+
+        for change in params.content_changes {
+            // TODO: some ranges seem weird, especially when pasting data
+            info!("changed at {:?}: {}", change.range, change.text)
+        }
+    }
+
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        info!("opened doc: {} - {}", params.text_document.uri, params.text_document.text);
     }
 
     async fn hover(&self, _: HoverParams) -> Result<Option<Hover>> {
