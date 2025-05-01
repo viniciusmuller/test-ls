@@ -23,7 +23,7 @@ directories = "5.0"
 trie-rs = { version = "0.4.2", features = ["rayon"] }
 walkdir = "2.5.0"
 tower-lsp = "0.20.0"
-tokio = { version = "1.38.1", features = ["io-std"] }
+tokio = { version = "1.38.2", features = ["io-std"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"
